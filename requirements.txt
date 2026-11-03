@@ -1,0 +1,7 @@
+ezjww>=0.7.6
+opencv-python
+numpy
+shapely>=2.0
+Pillow
+pymupdf
+rapidocr_onnxruntime

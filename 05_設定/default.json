@@ -1,0 +1,259 @@
+{
+  "_comment": "参考図面の基準による既定設定。新しい会社の基準が判明したらこのファイルをコピーして差し替える。",
+
+  "input": {
+    "mm_per_px_initial": 12.5,
+    "mm_per_px_search": [12.0, 13.0],
+    "grid_mm": 455,
+    "half_grid_mm": 227.5,
+    "allow_off_grid": false
+  },
+
+  "wall_detection": {
+    "gray_auto": true,
+    "gray_min": 180,
+    "gray_max": 197,
+    "gray_auto_halfwidth": 8,
+    "neutral_tolerance": 10,
+    "thickness_px": [6, 22],
+    "exterior_min_thickness_px": 13,
+    "min_segment_px": 20,
+    "small_gap_px": 25,
+    "bridge_gap_exterior_px": 300,
+    "bridge_gap_interior_px": 90,
+    "line_tolerance_px": 2.5,
+    "junction_tolerance_px": 14,
+    "keep_free_exterior_px": 70,
+    "snap_warn_mm": 60
+  },
+
+  "regions": {
+    "min_area_mm2": 150000,
+    "door_touch_mm": 60,
+    "open_pairs": [["玄関", "ホール"], ["LDK", "ヌック"], ["LDK", "階段"], ["ホール", "階段"],
+                   ["玄関", "土間"], ["LDK", "キッチン"], ["LDK", "ダイニング"], ["LDK", "リビング"]],
+    "door_probe_px": 14,
+    "area_over_ratio": 1.5,
+    "area_over_margin_m2": 2.0,
+    "wall_band_max_px": 24,
+    "kamachi_detect": false,
+    "kamachi_min_px": 40,
+    "kamachi_gap_min_px": 3,
+    "kamachi_gap_max_px": 9,
+    "wall_line_px": 5,
+    "floor_min_share": 0.3,
+    "floor_min_color_diff": 25,
+    "floor_min_separation": 0.35
+  },
+
+  "room_names": {
+    "ocr_scale": 3,
+    "binarize_max": 170,
+    "dark_text_max": 120,
+    "merge_gap_px": 12,
+    "match_min_score": 0.6
+  },
+
+  "text_cleaning": {
+    "red_min_diff": 60,
+    "red_faint_diff": 25,
+    "red_max_gb_diff": 30,
+    "red_blob_min_area": 150,
+    "dark_max": 140,
+    "glyph_max_px": 28,
+    "glyph_min_area": 3,
+    "word_join_px": 7,
+    "word_min_glyphs": 2,
+    "inpaint_radius": 3
+  },
+
+  "grid_detection": {
+    "half_lines": true,
+    "_bare_line": "室内の壁で、芯に灰色の帯がこの割合未満かつ建具もない線は壁ではない（物入の棚の境・キッチン天板の縁・玄関収納のハッチングの縁、10/27）。make_plan で外す",
+    "bare_line_max_gray": 0.25,
+    "_inner_wall": "外壁の印が付いた壁でも、外形の線から距離がこれより離れて内側にあれば内壁（プラン5 2F、10/27）",
+    "inner_wall_margin_mm": 150, "split_inner_min_mm": 900, "whole_inner_retype": false,
+    "_staged": "壁は段階的に：まず910の線、次に455の線、最後に227.5の線で取りこぼしを拾う（2026-10-24 ユーザー）。前の段階で決まった壁は後の段階で消さない",
+    "staged": true,
+    "_calib": "目盛り合わせ：壁の長さが一番多く227.5の線に乗る縮尺とずれを探す（許容±25mm）",
+    "calib_tol_mm": 25,
+    "profile_half_px": 14,
+    "center_tol_px": 3,
+    "center_tol_ext_px": 5,
+    "fitting_half_px": 10,
+    "gray_halfwidth": 12,
+    "outline_search_px": 3,
+    "outline_max_value": 160,
+    "end_pad_px": 10,
+    "grid_margin": 2,
+    "wall_min_frac": 0.5,
+    "fitting_min_frac": 0.5,
+    "fitting_max_edges": 8,
+    "fitting_end_node_gray": 1.01,
+    "interior_min_length_mm": 455,
+    "complete_min_frac": 0.3,
+    "complete_max_edges": 4,
+    "complete_max_bare_edges": 1,
+    "int_min_thickness_px": 4,
+    "koshi_half_min_px": 3, "koshi_half_max_px": 6, "koshi_light_min": 200, "koshi_min_frac": 0.6,
+    "fitting_weak_frac": 0.35, "fitting_strong_frac": 0.9,
+    "_fitting_text": "文字が建具の線に重なっている所：建具線＋文字で辺の半分以上あれば、隣の建具の続きとみなす（プラン2 2F 洋室Aのクローゼット）",
+    "_furniture": "壁の灰色が1辺以下で残りが建具っぽい線、しかも片方の端がどの壁にも付いていない列は家具（キッチン後ろのカップボードの家電の灰色、プラン3 1F）",
+    "furniture_max_wall_edges": 1,
+    "fitting_text_frac": 0.5, "fitting_text_min_fit": 0.15, "fitting_grow_max_edges": 2,
+    "outline_first": true, "outline_gap_max_edges": 12, "island_max_edges": 8,
+    "_outline_close": "外形が途切れて一部しか閉じない時（プラン4 1F）：3マスまでのすき間を閉じた形の方が明らかに大きければ、そちらを外形にする",
+    "outline_close_edges": 3, "outline_close_ratio": 0.8,
+    "_stair": "階段：線の両側の帯（芯から12〜30px）を同じ位置で横切る細い線が4本以上 → 階段の芯。壁・建具にしない",
+    "stair_strip_px": [12, 30], "stair_dark_max": 120, "stair_min_lines": 4
+  },
+
+  "opening_detection": {
+    "band_half_px": 12,
+    "end_guard_px": 9,
+    "min_gap_px": 4,
+    "line_min_cov": 0.75,
+    "arc_min": 0.7,
+    "pocket_min_ratio": 0.4,
+    "pocket_line_max_offset_px": 3,
+    "swing_max_ink": 0.25,
+    "entrance_arc_min": 0.5,
+    "hinge_arc_min": 0.45,    "double_leaf_min": 0.8,
+    "joinery_min_spread_px": 12,
+    "storage_window_px": 8,
+    "storage_band_px": 8,
+    "storage_line_cov": 0.85,
+    "storage_min_mm": 450,
+    "storage_max_lines": 4,
+    "storage_leaf_cov": 0.7,
+    "storage_max_spread_px": 4,
+    "storage_max_centre_px": 2.5,
+    "storage_max_mm": 2000,
+    "text_min_ink": 0.08,
+    "min_interior_mm": 455,
+    "min_exterior_mm": 250
+  },
+
+
+  "window_type": {
+    "_comment": "窓の記号がないボード用：描き方で種類を見分ける（縦すべり＝外に扇、引違い＝ずれた2枚の障子、FIX＝1本の障子）",
+    "dark_max": 120, "band_half_px": 9, "fan_reach_px": 45, "fan_min_spread_px": 4, "fan_min_rows": 6, "tf_max_span": 0.45, "fan_min_span": 0.2,
+    "full_cov": 0.85, "part_cov": [0.25, 0.85], "speck_max_px": 10, "fan_diag_min": 0.07, "fan_leg_min_px": 8, "arc_keeps_hinge": 0.95, "tf_leg_max_share": 0.3,
+    "_dash": "横すべり＝窓の外に壁と平行な点線（点線の四角）。点の長さ・間隔がそろっていること（砂利は除く）。点線が窓の一部だけ＝横すべり+FIX",
+    "dash_min_count": 5, "dash_len_px": [2, 9], "dash_gap_px": [1, 8], "ty_max_span": 0.6
+  },
+
+  "entrance": {
+    "_comment": "玄関ドア：玄関の文字から壁を越えずに見える外壁の建具。1つならそれ、複数なら玄関ドアらしい幅・円弧で選ぶ（2026-10-23）",
+    "max_reach_mm": 3000, "width_mm": [700, 1300],
+    "_ocr": "全体の文字読み取りで玄関が読めない時（タイルの上の文字）は、外壁の扉まわりを3倍に拡大・明るい線を消して読み直す",
+    "ocr_reach_px": 200, "ocr_scale": 3, "ocr_binarize_max": 120
+  },
+
+  "interior_type": {
+    "_comment": "折戸＝V字（向きの違う2本の斜線、円弧なし）。910未満はV字が片方の端だけ、広いものは両端。框（上がり框）＝玄関の土間と床の段差の縁。玄関から壁を越えずに見える二本線（ずれた障子・円弧なし）。建具にも壁にもしない（2026-10-23）",
+    "dark_max": 120, "hough_votes": 8, "diag_deg": [15, 84], "fold_min_each": 2, "fold_min_total": 10, "fold_pair_min_mm": 910, "leg_from_frame_px": 14,
+    "_double_arc": "両開き＝両方の枠から幅の半分の円弧（両開きは0.87〜1.0、折戸のV字は0.53以下）",
+    "double_arc_min": 0.8, "double_arc_max_single": 0.45, "double_arc_confirm": 0.7, "pocket_line_min": 0.35, "swing_arc_over_fold": 0.8, "swing_max_mm": 1000, "light_line_max": 200, "hatch_min_density": 0.15,
+    "kamachi_kinds": ["sliding", "storage", "joinery"], "kamachi_reach_mm": 3000, "kamachi_min_full_lines": 2
+  },
+
+  "dimensions": {
+    "_comment": "寸法線：長い細い黒線と、そこから壁へ伸びる引出線（目盛り）。寸法は必ず建物の最外周まで振ってある（2026-10-24）",
+    "dark_max": 90, "min_len_px": 150, "tick_min_px": 12, "min_ticks": 3, "outside_min_px": 25, "min_tick_gap_px": 10,
+    "use": true, "tick_weight": 3, "tick_band_px": 12, "max_scale_change": 0.015
+  },
+
+  "genkan_storage": {
+    "_comment": "玄関収納（下駄箱）：玄関・ホールの近くで、正方形に近い四角が3〜4個並び、それぞれにハッチングか対角線（2026-10-24）。作図はしない",
+    "dark_max": 120, "cell_px": [20, 40], "scan_step_px": 3, "min_ink": 0.02, "max_ink": 0.5, "vote_frac": 0.5,
+    "hatch_min_lines": 4, "diag_min": 0.8, "diag_max_ink": 0.2,
+    "row_min_cells": 3, "row_max_cells": 4, "near_label_mm": 3000
+  },
+
+  "koshikabe": {
+    "_comment": "腰壁：壁と同じ幅の白抜きの帯（塗りなし）。笠木は芯から±75、自由端は芯から75先まで、壁との取り合いは柱面まで。中心線、建物基礎レイヤ・線色3（手直し版1F 2026-10-22）",
+    "dark_max": 120, "light_min": 200, "half_min_px": 3, "half_max_px": 6, "gap_px": 4, "min_len_px": 25,
+    "kasagi_mm": 75, "layer": 4, "color": 3, "style": 1, "min_len_mm": 800, "corner_join_mm": 200, "corner_min_len_mm": 300, "void_reach_mm": 2000, "stair_past_grid_mm": 65,
+    "_pair": "455以内の間隔で平行に並び長さの大半が重なる2本は、笠木ではなく広いハッチング（プラン3 1F 玄関の窓まわり、10/27）", "pair_max_gap_mm": 455
+  },
+
+  "placement": {
+    "_comment": "建具の配置。枠外を通り芯から65（柱面から12.5）に置く。微調整は人が行う",
+    "frame_edge_from_grid_mm": 65,
+    "window_sill": {"_comment": "窓台：左右の壁に12.5ずつ埋め込み、壁面（石膏ボード面）からの出10。手直し版1Fでは中心線、建物基礎レイヤ・線色3・実線",
+                    "embed_mm": 12.5, "projection_mm": 10, "layer": 4, "color": 3, "style": 1,
+                    "_garage_door": "ガレージと部屋の間の断熱壁にある開きの窓（縦すべり）で幅600以上は、ガレージへのドアの代わりなので窓台を付けない（ユーザー 10/27）", "garage_door_min_mm": 600},
+    "_window_corner": "窓の端が外壁の入隅に近いときは、窓の基点（枠の端）を相手の外壁面から50離す（ユーザー 10/26 プラン3 1F）", "window_corner_gap_mm": 50,
+    "_window_ref": "窓の基準点（メーカー図の×印）は付加断熱材の外側に置く。距離は offsets_mm の added_insulation をそのまま使う（付加断熱の厚みを変えれば窓も一緒に動く）",
+    "jamb_search_mm": 60,
+    "_storage_frame_proud": "折戸・両開きの枠は、開く側の面をボード面からこれだけ出す（ユーザー 10/30：12mm、例1 1F 修正完了で12.5）",
+    "storage_frame_proud_mm": 12.5,
+    "_door_small": "片開きはW778が基本。図面の開口がこれより狭い時は小さめのW648（ラシッサ トイレドア、1Fトイレの例）",
+    "door_small_max_mm": 690,
+    "_ub_door_max": "UBドアの幅の上限。これより広い「UBドア」は家具（カウンターの縁など）の線とみて、その区間の壁ごと外す（プラン3 1F、10/27）",
+    "ub_door_max_mm": 1000,
+    "_entrance_casing": "玄関ドアの室内側の額縁（暫定、ユーザー 10/27 厚21）：壁は枠の手前 thickness で止めて閉じ、額縁はボード面から proud 出す。枠側の線は通り芯から屋外側へ frame_reach まで（プラン3 1F 修正版の実測）",
+    "entrance_casing": {"thickness_mm": 21, "proud_mm": 13, "frame_reach_mm": 95},
+    "_stair_foot": "階段の芯の線の端の先（回り段・上り口）にある、芯と平行で芯からこの距離以内の開口は上り口（建具なし・壁を開ける）。回り段の斜線を折戸のV字と見誤った（プラン5 1F、10/27）",
+    "stair_foot_reach_mm": 910, "stair_foot_kinds": ["folding"],
+    "_end_gap": "建具の端（吊元・引き始め側）と図面の開口の端のずれがこれを超えたら要確認（2026-10-24）",
+    "end_gap_max_mm": 150,
+    "_kamachi": "框（上がり框）の線：通り芯から玄関側へ52.5と157.5（暫定、ユーザー手書きCADより 2026-10-23）",
+    "kamachi_mm": [52.5, 157.5],
+    "_open_kamachi": "壁のない通り芯の框：玄関側52.5・157.5（±tol）に黒い線（画素値<dark）が続く区間（壁から壁までの min_frac 以上かつ min_mm 以上）。端は壁に届けば壁の面、届かなければ線の終わり（下駄箱で止まる、プラン5）。tol は発表図の線のずれ（プラン5で25〜42）を許す（プラン3 1F x=5005、10/27）",
+    "open_kamachi_tol_mm": 45, "open_kamachi_dark": 60, "open_kamachi_min_frac": 0.6, "open_kamachi_min_mm": 900, "kamachi_layer": 3, "kamachi_color": 1, "kamachi_style": 1,
+    "library": "03_建具部品\\部品集_*.jww"
+  },
+
+  "offsets_mm": {
+    "column_face": 52.5,
+    "board_face_inside": 65.0,
+    "exterior_side": {
+      "sheathing": 61.5,
+      "added_insulation": 121.5,
+      "ventilation": 139.5,
+      "exterior_face": 154.5
+    },
+    "interior_wall": [52.5, 65.0],
+    "porch_side": {"_comment": "室内に接しない壁（ポーチ壁）のポーチ側。付加断熱層ごと削る。外側は付加断熱層を空のまま残して外壁面をそろえる（手直し版1F 2026-10-22）",
+                   "column_face": 52.5, "sheathing": 61.5, "ventilation": 79.5, "exterior_face": 94.5}
+  },
+
+  "stair_rail": {
+    "_comment": "2Fの階段まわり：上がり切り（DN側）以外は壁か腰壁。どちらとも判定できない辺は腰壁（2026-10-26）。階段の長さがこれを超える＝両端が閉じられていない時は触らない",
+    "max_len_mm": 2730
+  },
+
+  "toilet": {
+    "_comment": "便器の形（楕円、後ろにタンクがある場合と無い場合あり）がある2畳以下の閉じた区画はトイレ（2026-10-24）",
+    "dark_max": 200, "max_area_m2": 2.6, "min_area_m2": 0.8, "half_long_mm": [175, 300], "half_short_mm": [140, 220], "min_score": 0.85, "max_back_to_wall_mm": 450, "blank_in": 0.78, "blank_out": 1.25, "leg_len": 0.6
+  },
+
+  "outside_space": {
+    "_comment": "建物の外形の中の外部空間（ガレージ・ポーチ・バルコニー、2026-10-24）。室内の外形には含めない。外部空間の壁：外部空間側は付加断熱なし（52.5/61.5/79.5/94.5）、外側は室内の外壁と同じ通り芯で続くなら付加断熱あり、それ以外はなし。ガレージ内の仕上げは石膏ボード12.5（通気層の外）。バルコニーは開口部や笠木があっても無視して外壁で仕上げる（開口部は人が描く）",
+    "names": ["ガレージ", "ポーチ", "バルコニー"], "garage_board_mm": 12.5, "garage_names": ["ガレージ"]
+  },
+
+  "column": {
+    "size_mm": 105,
+    "pitch_mm": 1820
+  },
+
+  "layers": {
+    "group": 0,
+    "scale": 50,
+    "group_name": "",
+    "names": ["境界線", "敷地外部", "外構", "マーク、物", "中心線、建物基礎", "CYAN", "ORANGE", "PINK",
+              "WHITE", "YELLOW", "文字", "ﾊｯﾁﾝｸﾞ", "ﾚｲﾔ-12", "ﾚｲﾔ-13", "ﾚｲﾔ-14", "図面枠"],
+    "wall": {"layer": 3, "structure_color": 1, "finish_color": 5, "style": 1},
+    "center": {"layer": 4, "color": 3, "style": 5},
+    "frame": {"layer": 15, "color": 9, "style": 9}
+  },
+
+  "print_marks_mm": {
+    "arm": 15.9,
+    "l_corners": [[205, 144], [209, 147]],
+    "outline": [210, 148.5]
+  }
+}
