@@ -24,7 +24,7 @@ from opening_detect import Mapper  # noqa: E402
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-def find_pan(line_mask, mmpp, tc):
+def find_pan(line_mask, mmpp, tc, fronts=((1, 0), (-1, 0), (0, 1), (0, -1))):
     """Best half-oval in the mask: (score, cx, cy, front direction, half-length px, half-width px).
     The front half of a bowl: an ellipse half, its open side toward the tank (back)."""
     H, W = line_mask.shape
@@ -35,7 +35,7 @@ def find_pan(line_mask, mmpp, tc):
             a, b = a_mm / mmpp, b_mm / mmpp
             if b > a:
                 continue
-            for front in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            for front in fronts:
                 # points on the front half: angle -80..80 deg around the front direction; also the
                 # same curve shrunk and grown a little, which must be mostly blank (a drawn bowl is
                 # one line with clear space on both sides; hatching or clutter is ink everywhere)
@@ -80,7 +80,8 @@ def find_pan(line_mask, mmpp, tc):
 
 def main():
     img_path, walls_path, names_path, cfg_path = sys.argv[1:5]
-    cfg = json.load(open(cfg_path, encoding="utf-8"))
+    import spec
+    cfg = spec.load_cfg(cfg_path)
     tc = cfg["toilet"]
     det = json.load(open(walls_path, encoding="utf-8"))
     M = Mapper(det, cfg["input"]["grid_mm"])

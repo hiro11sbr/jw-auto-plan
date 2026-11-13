@@ -1065,7 +1065,10 @@ def split_inner_runs(walls, ring, cfg):
         pieces = []
         for s0, s1 in zip(cuts, cuts[1:]):
             p = ([s0, c], [s1, c]) if h else ([c, s0], [c, s1])
-            inner = ring.contains(LineString(p)) and LineString(p).distance(ring.exterior) > margin
+            # 外形から直角に中へ入る区間は端で外形に触れるので、線全体ではなく中点の離れで見る
+            # （プラン5 2F x=2730 y4550〜5460：ホールと主寝室の間が外壁のまま窓にされた 11/14）
+            seg = LineString(p)
+            inner = ring.contains(seg) and seg.interpolate(0.5, normalized=True).distance(ring.exterior) > margin
             pieces.append([s0, s1, p, inner])
         merged = []
         for pc in pieces:  # join neighbouring stretches of the same kind

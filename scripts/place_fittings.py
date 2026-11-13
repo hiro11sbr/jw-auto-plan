@@ -98,6 +98,11 @@ def _load_one(path, offsets):
         ys = [e["start_y"] for e in b["entities"] if e["type"] == "LINE"
               and abs(e["start_y"] - e["end_y"]) < 1e-6 and abs(e["end_x"] - e["start_x"]) * S > w / 2]
         inner = min(ys) * S if ys else 0.0
+        if any(f"_{w_}_" in name for w_ in WINDOWS):
+            # 窓：枠の室内側の面＝部品の線の一番室内側（メーカーの窓の枠は左右の脚が奥まで入るので、長い横線だけでは
+            # 足りず、壁の戻り線が窓にはみ出した、user 11/13）
+            ally = [y * S for e in b["entities"] if e["type"] == "LINE" for y in (e["start_y"], e["end_y"])]
+            inner = min(ally) if ally else inner
         for word in WORDS:
             if f"_{word}_" in name:
                 lib[name] = (name, b["entities"], w / S, word, w, offsets.get(name, std_offset(word, w)), inner)
@@ -280,7 +285,11 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
                     # shows it (プラン3 1F トイレ W648 against the 7280 jamb; user 10/27). An
                     # opening in the middle of the bay keeps the hinge rule (プラン2 1F トイレ)
                     at_low = d_low < d_high
-            if at_low is None:
+            if p[3] in ("玄関片開き", "玄関親子") and gb - ga <= cfg["placement"].get("entrance_centre_bay_max_mm", 1369):
+                # an entrance door in a 1365 bay between columns stands in the middle of it: with the
+                # wall thickness there is almost no room left beside the frame (user 11/12, プラン4 1F)
+                frames = [(p, (ga + gb) / 2 - p[4] / 2)]
+            elif at_low is None:
                 frames = [(p, (a + b) / 2 - p[4] / 2)]
             else:
                 frames = [(p, ga + p[5])] if at_low else [(p, gb - p[5] - p[4])]
@@ -315,6 +324,11 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
                 # (user 10/30: 折戸 frame 12 out of the wall face; 例1 1F 修正完了 3 places, 27.5 shift)
                 depth = -inner  # frame half depth (its local -y face)
                 shift = cfg["offsets_mm"]["board_face_inside"] + cfg["placement"]["storage_frame_proud_mm"] - depth
+                if not name.startswith("LIXIL"):
+                    # メーカーの収納建具の部品集は、開く側の枠の面を
+                    # ボード面から12.5出した位置にもう置いている。さらにずらすと反対側の端が壁から
+                    # 枠厚分飛び出す（user 11/13）
+                    shift = 0.0
                 across = line + (sy * shift if h else -sy * shift)  # rot 90: local +y -> model -X
             pos = (along, across) if h else (across, along)
             # end check (user 10/24): the frame's start end must meet the drawn opening's end (its
