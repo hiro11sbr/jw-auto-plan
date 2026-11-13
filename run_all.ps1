@@ -21,13 +21,18 @@ $out = "$d\02_出力$sub"
 $mid = "$d\work\中間データ$sub"
 $img_dir = "$d\work\images$sub"
 New-Item -ItemType Directory -Force $t, $out, $mid, $img_dir | Out-Null
+# 判定（文字・壁・建具）は default.json。図面を書く make_plan だけは「現在の仕様」（05_設定\現在の仕様.txt。
+# なければ default.json）。make_plan に default.json を渡すと LIXIL の部品になる（11/13）
 $cfg = "$d\05_設定\default.json"
+$specName = if (Test-Path "$d\05_設定\現在の仕様.txt") { (Get-Content "$d\05_設定\現在の仕様.txt" -Encoding UTF8 | Select-Object -First 1).Trim() } else { "" }
+$planCfg = if ($specName -and (Test-Path "$d\05_設定\仕様\$specName.json")) { "$d\05_設定\仕様\$specName.json" } else { $cfg }
 
 # 寸法の文字の読み取り（RapidOCR）が入っていなければ、初回だけ自動で入れる（2026-11-03）
 & $py -3.13 -I -c "import rapidocr_onnxruntime" 2>$null
 if ($LASTEXITCODE -ne 0) {
     "RapidOCR を入れます（初回だけ、数分かかることがあります）"
-    & $py -3.13 -m pip install rapidocr_onnxruntime
+    # onnxruntime 1.32 はこのPC（Windows 10）で読み込みが止まったので、動いた 1.20.1 に固定（11/13）
+    & $py -3.13 -m pip install rapidocr_onnxruntime "onnxruntime==1.20.1"
 }
 
 & $py -3.13 -I "$d\scripts\extract_plans.py" "$d\$Pdf" $img_dir
@@ -50,6 +55,8 @@ foreach ($fl in "1F", "2F") {
     #     文字の読み取りに RapidOCR を使う（入っていなければ上で自動で入れる）
     #     （入っていなければ数字は読まず、グリッド上の外周の壁だけを足す）
     & $py -3.13 -I "$d\scripts\dim_walls.py" $img[$fl] $cfg "$mid\$fl" | Select-Object -Last 1
+    # 2d. 外壁のL字のすき間（玄関ドアのある壁と袖壁など）を壁でつなぐ。建具の判定より前に（11/11）
+    & $py -3.13 -I "$d\scripts\close_loose_ends.py" "$mid\${fl}_walls.json" $cfg
     # 2b. 腰壁（塗りのない壁幅の帯。キッチン前・階段まわり）
     # 2a. 便器の形でトイレを見つける（文字が読めなくても。2畳以下の区画、2026-10-24）
     & $py -3.13 -I "$d\scripts\toilet_detect.py" $img[$fl] "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg | Select-Object -Last 1
@@ -67,8 +74,9 @@ foreach ($fl in "1F", "2F") {
 }
 
 # 4. 壁のオフセット・柱・jww（確認画像は元の図面に重ねる。1F は上階の壁を柱位置の判断に使う）
-& $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\1F_walls.json" $img["1F"] "$t\1F" "$mid\2F_walls.json"
-& $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\2F_walls.json" $img["2F"] "$t\2F"
+Remove-Item "$t\1F.jww", "$t\2F.jww" -ErrorAction SilentlyContinue  # 前の回の図を間違って写さない
+& $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\1F_walls.json" $img["1F"] "$t\1F" "$mid\2F_walls.json"
+& $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\2F_walls.json" $img["2F"] "$t\2F"
 
 foreach ($fl in "1F", "2F") {
     Copy-Item "$t\$fl.jww" "$out\$fl.jww" -Force

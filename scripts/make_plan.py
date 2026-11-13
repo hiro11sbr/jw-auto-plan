@@ -2,7 +2,7 @@
 
 usage: make_plan.py <config.json> <floor_walls.json> <floor_image.png> <out_prefix> [upper_walls.json]
 """
-import json
+import json, os
 import math
 import sys
 from collections import defaultdict
@@ -24,6 +24,9 @@ from shapely.ops import polygonize, unary_union
 
 sys.stdout.reconfigure(encoding="utf-8")
 EPS = 1e-6
+BOXES = []  # 玄関収納 bodies (x0, y0, x1, y1), mm: the 框 shows through them as dotted
+ENT_RUNS = []  # 玄関収納 found in the drawing (entrance_storage.detect): dicts
+FURN = []  # stretches taken out of the walls as furniture: (horizontal, line_mm, a_mm, b_mm)
 
 
 # ---------------------------------------------------------------- walls
@@ -36,6 +39,7 @@ class Wall:
         else:
             self.c, self.a, self.b = x1, min(y1, y2), max(y1, y2)
         self.ext = ext
+        self.ext_in = ext  # as the input called it (before the outline reading)
 
     def pt(self, t):
         return (t, self.c) if self.h else (self.c, t)
@@ -90,6 +94,7 @@ def bare_lines(data, img_path, ops_path, cfg):
             ok += sum(lo <= p.mean() <= hi and p.max() - p.min() <= 20 for p in win) >= 5
         if n and ok / n < c["bare_line_max_gray"]:
             out.add(i)
+            FURN.append((h, line, a, b))
             print(f"灰色の帯のない線（建具もない）: 壁を外す {'横' if h else '縦'} {line} {a}〜{b}（灰{ok / n:.2f}）")
     return out
 
@@ -137,6 +142,584 @@ def drop_furniture_lines(walls, ops_path, cfg):
                     walls.append(Wall(w.pt(s), w.pt(e), w.ext))
         out.add(o["no"])
         print(f"家具の線（UBドアには広すぎる 幅{o['width_mm']}）: 壁を外す {'横' if h else '縦'} {line} {lo}〜{hi}")
+    return out
+
+
+def furniture_runs(walls, det, img_path, base_path, cfg):
+    """Furniture read as a wall: a stretch of an interior wall (300 mm or more) with no gray band
+    and no fitting on it. The user's answers of 11/5 (質問4): a narrow strip beside it (冷蔵庫・
+    カップボード・玄関収納, プラン4 1F・プラン5 1F) is furniture, so the stretch is taken out of the
+    wall; a line with the same room on both sides (プラン5 1F, in the LDK) is a 腰壁; a stretch
+    between two ordinary rooms, e.g. the entrance of a UB (a closed room), stays as it is.
+    Takes the stretches out of walls in place and returns the 腰壁 entries to add."""
+    from opening_detect import Mapper
+    fc = cfg["furniture_runs"]
+    regions_path, ops_path = base_path + "_区画.json", base_path + "_openings.json"
+    if not (Path(regions_path).exists() and Path(ops_path).exists()):
+        return []
+    regions = json.load(open(regions_path, encoding="utf-8"))
+    ops = json.load(open(ops_path, encoding="utf-8"))
+    ops = ops["openings"] if isinstance(ops, dict) else ops
+    M = Mapper(det, cfg["input"]["grid_mm"])
+    lo, hi = det["gray_range"]
+    g = cv2.cvtColor(cv2.imdecode(np.fromfile(img_path, np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2GRAY)
+    gray = (g >= lo) & (g <= hi)
+
+    def region_at(X, Y):
+        best = None
+        for r in regions:
+            x0, y0, x1, y1 = r["bbox_px"]
+            if x0 <= X <= x1 and y0 <= Y <= y1 and (best is None or (x1 - x0) * (y1 - y0) < best[0]):
+                best = ((x1 - x0) * (y1 - y0), r)
+        return best[1] if best else None
+
+    kos, cuts = [], []
+    for w in walls:
+        if w.ext:
+            continue
+        ts = np.arange(w.a + 60, w.b - 60, 12.5)
+        if not len(ts):
+            continue
+        pts = [(M.x(t), M.y(w.c)) if w.h else (M.x(w.c), M.y(t)) for t in ts]
+        on = [gray[max(int(round(y)) - 2, 0):int(round(y)) + 3, max(int(round(x)) - 2, 0):int(round(x)) + 3].mean() > 0.3
+              for x, y in pts]
+        runs, st = [], None
+        for t, v in zip(list(ts) + [None], on + [True]):
+            if not v and st is None:
+                st = t
+            elif v and st is not None:
+                runs.append((st, t if t is not None else ts[-1]))
+                st = None
+        i0 = 0 if w.h else 1
+        for a, b in runs:
+            if b - a < fc["min_len_mm"]:
+                continue
+            fitted = False
+            for o in ops:
+                c = o["p1_mm"][1] if w.h else o["p1_mm"][0]
+                if o.get("rejected") or o["horizontal"] != w.h or abs(c - w.c) > 100:
+                    continue
+                oa, ob = sorted((o["p1_mm"][i0], o["p2_mm"][i0]))
+                fitted = fitted or (oa - 150 <= a and ob + 150 >= b)
+            if fitted:
+                continue
+            mid, sides = (a + b) / 2, []
+            for sg in (1, -1):
+                d = fc["probe_mm"] * sg
+                X, Y = (M.x(mid), M.y(w.c + d)) if w.h else (M.x(w.c + d), M.y(mid))
+                sides.append(region_at(X, Y))
+            same = sides[0] is not None and sides[0] is sides[1]
+            narrow = any(r is None or r["area_m2"] < fc["narrow_region_m2"] for r in sides)
+            what = "腰壁" if same else ("家具" if narrow else None)
+            if what is None:
+                continue
+            cuts.append((w, a, b))
+            if what == "家具":
+                FURN.append((w.h, w.c, a, b))
+            if what == "腰壁":
+                kos.append({"horizontal": w.h, "line_mm": w.c, "a_mm": a, "b_mm": b, "len_px": 40,
+                            "source": "家具の列"})
+            print(f"{what}の線を壁から外す（灰色の帯なし・建具なし）: {'横' if w.h else '縦'} {w.c} {round(a)}〜{round(b)}")
+    for w, a, b in cuts:
+        if w not in walls:
+            continue
+        walls.remove(w)
+        # (the stretch is cut from the nearest end of the sampled run out to the wall faces)
+        for s, e in ((w.a, a - 60), (b + 60, w.b)):
+            if e - s > 100:
+                walls.append(Wall(w.pt(s), w.pt(e), w.ext))
+    return kos
+
+
+def furniture_symbols(det, img_path, base_path, cfg, walls=()):
+    """Draw the furniture that was taken out of the walls (user 11/7: 記号まで; 参考図面ではレイヤー6が
+    家具・設備、レイヤー5が建具。レイヤー分けは会社ごとなので設定 furniture_draw)。
+    The body sits against the wall's face read from the image (the line found is grid-snapped and can
+    be 100 mm off the real furniture): the gray band's near edge across the stretch, and the end walls'
+    faces along it. 玄関収納 (beside 玄関/ホール/土間): 800 hatched + 400 tall (diagonals) = 1200,
+    depth 400. A stretch of 910 + 900 units (3000 or more): 冷蔵庫 (700 square, dotted) at the lower
+    end + カップボード (depth 455, 900 units, hatched). Returns extras lines (mm)."""
+    from opening_detect import Mapper
+    fd = cfg.get("furniture_draw")
+    rp = base_path + "_区画.json"
+    if not (fd and FURN and Path(rp).exists()):
+        return []
+    regions = json.load(open(rp, encoding="utf-8"))
+    M = Mapper(det, cfg["input"]["grid_mm"])
+    lo, hi = det["gray_range"]
+    g = cv2.cvtColor(cv2.imdecode(np.fromfile(img_path, np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2GRAY)
+    gray = (g >= lo) & (g <= hi)
+
+    def region_at(X, Y):
+        best = None
+        for r in regions:
+            x0, y0, x1, y1 = r["bbox_px"]
+            if x0 <= X <= x1 and y0 <= Y <= y1 and (best is None or (x1 - x0) * (y1 - y0) < best[0]):
+                best = ((x1 - x0) * (y1 - y0), r)
+        return best[1] if best else None
+
+    out, seen = [], set()
+    lay, col, sty, dot = fd["layer"], fd["color"], fd["style"], fd["dot_style"]
+    lay_b = fd.get("built_in_layer", lay)  # 造り付け（カップボード・玄関収納）: fixed, not 据置 furniture
+    cur = [lay]
+    for h, c, a, b in FURN:
+        if (h, c, round(a), round(b)) in seen or b - a < 300:
+            continue
+        seen.add((h, c, round(a), round(b)))
+        mid = (a + b) / 2
+        sides = []
+        for sg in (1, -1):
+            d = 150 * sg
+            X, Y = (M.x(mid), M.y(c + d)) if h else (M.x(c + d), M.y(mid))
+            sides.append(region_at(X, Y))
+        thin = [r is not None and r["area_m2"] < cfg["furniture_runs"]["narrow_region_m2"] and not r.get("names")
+                for r in sides]
+        if not any(thin) or b - a < 600:
+            continue  # no unnamed narrow strip beside it (or too short): not furniture to draw
+        sg = 1 if thin[0] else -1  # the wall of the strip lies on this side
+        names = " ".join(n for r in sides if r for n in r.get("names", []))
+        entrance = any(k in names for k in ("玄関", "ホール", "土間"))
+        depth = fd["entrance_depth_mm"] if entrance else fd["cupboard_depth_mm"]
+
+        def on_gray(t, d):
+            X, Y = (M.x(t), M.y(c + sg * d)) if h else (M.x(c + sg * d), M.y(t))
+            X, Y = int(round(X)), int(round(Y))
+            if not (1 <= Y < gray.shape[0] - 1 and 1 <= X < gray.shape[1] - 1):
+                return False
+            return gray[Y - 1:Y + 2, X - 1:X + 2].mean() > 0.5
+
+        # the wall's near face: along the stretch, the farthest start of a gray run (>= 100 mm thick)
+        # within reach (the appliance grays on the way are nearer)
+        hits = []
+        for t in np.arange(a + 150, b - 150, 100):
+            best = None
+            for d in np.arange(0, depth + 250, 12.5):
+                if on_gray(t, d) and not on_gray(t, d - 12.5) and all(on_gray(t, d + k * 12.5) for k in range(1, 8)):
+                    best = d
+            if best is not None:
+                hits.append(best)
+        face = float(np.median(hits)) if len(hits) >= 3 else float(depth)
+        dm = face - depth / 2  # mid-depth of the body
+
+        def end_face(t0, step):  # end of the first gray run (>= 4 samples) met walking in from outside
+            t, run, miss = t0, 0, 0
+            for _ in range(80):
+                if on_gray(t, dm):
+                    run, miss = run + 1, 0
+                elif run >= 4:
+                    miss += 1
+                    if miss >= 4:  # (thin dark outline lines split a band: only a real gap ends it)
+                        return t - step * miss
+                else:
+                    run = 0
+                t += step
+            return None
+
+        a_end = end_face(a - 100, 12.5)
+        b_end = end_face(b + 100, -12.5)
+        a0 = a_end if a_end is not None and abs(a_end - a) < 250 else a
+        b0 = b_end if b_end is not None and abs(b_end - b) < 250 else b
+        # snap to the model: the faces are exactly 65 from the wall centre lines (the image measure was
+        # 10-30 mm off, the furniture sank into a wall or stood off it; user 11/8)
+        board = cfg["offsets_mm"]["board_face_inside"]
+        back = [w_ for w_ in walls if w_.h == h and abs(w_.c - (c + sg * face)) < 150 and w_.a - 150 <= a and b <= w_.b + 150]
+        if back:
+            w_ = min(back, key=lambda q: abs(q.c - (c + sg * face)))
+            face = sg * (w_.c - c) - board
+            dm = face - depth / 2
+        across_ok = lambda w_, t: w_.h != h and w_.a - 200 <= c <= w_.b + 200 and abs(w_.c - t) < 200
+        lo_w = [w_ for w_ in walls if across_ok(w_, a)]
+        hi_w = [w_ for w_ in walls if across_ok(w_, b)]
+        if lo_w:
+            a0 = min(lo_w, key=lambda q: abs(q.c - a)).c + board
+        if hi_w:
+            b0 = min(hi_w, key=lambda q: abs(q.c - b)).c - board
+
+        def pt(t, d):  # d: distance from the wall face, away from the wall
+            return (t, c + sg * (face - d)) if h else (c + sg * (face - d), t)
+
+        def box(t0, t1, dep, style, d0=0):  # dep = far depth; d0 = near depth (0 = on the wall face)
+            for p, q in (((t0, d0), (t1, d0)), ((t0, dep), (t1, dep)), ((t0, d0), (t0, dep)), ((t1, d0), (t1, dep))):
+                out.append(((pt(*p), pt(*q)), cur[0], col, style))
+
+        def hatch(t0, t1, dep):  # the top's hatching: lines along the long side, 50 mm apart (user 11/7)
+            d = fd["hatch_mm"]
+            while d < dep - 1:
+                out.append(((pt(t0, d), pt(t1, d)), cur[0], col, sty))
+                d += fd["hatch_mm"]
+
+        if entrance:
+            cur[0] = lay_b
+            low, tall = fd["entrance_low_mm"], fd["entrance_tall_mm"]
+            xs = [pt(a0, 0)[0], pt(a0 + low + tall, depth)[0]]
+            ys = [pt(a0, 0)[1], pt(a0 + low + tall, depth)[1]]
+            BOXES.append((min(xs), min(ys), max(xs), max(ys)))
+            box(a0, a0 + low, depth, sty)
+            hatch(a0, a0 + low, depth)
+            box(a0 + low, a0 + low + tall, depth, sty)
+            out.append(((pt(a0 + low, 0), pt(a0 + low + tall, depth)), cur[0], col, sty))  # one diagonal only (user 11/7)
+            print(f"家具を描く: 玄関収納 {'横' if h else '縦'} {c} {round(a0)}〜{round(a0 + low + tall)}"
+                  f"（{low}ハッチ＋{tall}対角線、奥行き{depth}、壁の面から）")
+            continue
+        n_units = (b0 - a - 910) / fd["unit_mm"]
+        if b - a >= 3000 and abs(n_units - round(n_units)) < 0.12:
+            cur[0] = lay
+            g0 = fd["fridge_gap_mm"]  # 50 mm clear of the walls on every side
+            box(a0 + g0, a0 + g0 + fd["fridge_mm"], g0 + fd["fridge_mm"], dot, g0)
+            c0 = a + 910
+            cur[0] = lay_b
+            box(c0, b0, depth, sty)
+            n = max(1, round((b0 - c0) / fd["unit_mm"]))
+            for k in range(1, n):
+                t = c0 + (b0 - c0) * k / n
+                out.append(((pt(t, 0), pt(t, depth)), cur[0], col, sty))
+            hatch(c0, b0, depth)
+            print(f"家具を描く: 冷蔵庫 {'横' if h else '縦'} {c} {round(a0 + g0)}〜{round(a0 + g0 + fd['fridge_mm'])}（{fd['fridge_mm']}角、壁から{g0}）"
+                  f"＋カップボード {round(c0)}〜{round(b0)}（奥行き{depth}、壁の面から）")
+        elif b - a < 1000:
+            cur[0] = lay
+            g0 = fd["fridge_gap_mm"]
+            box(a0 + g0, a0 + g0 + fd["fridge_mm"], g0 + fd["fridge_mm"], dot, g0)
+            print(f"家具を描く: 冷蔵庫 {'横' if h else '縦'} {c} {round(a0 + g0)}〜{round(a0 + g0 + fd['fridge_mm'])}")
+        else:
+            cur[0] = lay_b
+            box(a0, b0, depth, sty)
+            hatch(a0, b0, depth)
+            print(f"家具を描く: カップボード {'横' if h else '縦'} {c} {round(a0)}〜{round(b0)}（奥行き{depth}、壁の面から）")
+    return out
+
+
+def find_entrance_runs(det, img_path, base_path, cfg):
+    """The drawing's 玄関収納 (found once; the door shift and the drawing both use it)."""
+    key = (img_path, base_path)
+    if ENT_RUNS and ENT_RUNS[0] == key:
+        return ENT_RUNS[1]
+    names_p, ops_p = base_path + "_部屋名.json", base_path + "_openings.json"
+    runs = []
+    if cfg.get("furniture_draw") and Path(names_p).exists() and Path(ops_p).exists():
+        import entrance_storage as ES
+        names = json.load(open(names_p, encoding="utf-8"))
+        ops = json.load(open(ops_p, encoding="utf-8"))
+        ops = ops["openings"] if isinstance(ops, dict) else ops
+        runs = ES.detect(img_path, det, names, ops, cfg)
+    ENT_RUNS[:] = [key, runs]
+    return runs
+
+
+def entrance_storage_symbols(det, img_path, base_path, cfg, walls=()):
+    """玄関収納を、図面の絵から見つけて描く（user 11/8〜: 壁を外した所だけでなく、図面にあるものを全部）。
+    見つけ方は scripts/entrance_storage.py（400の倍数のユニット、低＝ハッチング、トール＝対角線1本）。
+    場所は壁の面（壁芯から65）に合わせ、奥行き400。すでに furniture_symbols が描いた所（BOXES）は飛ばす。
+    Returns extras lines (mm)."""
+    fd = cfg.get("furniture_draw")
+    names_p, ops_p = base_path + "_部屋名.json", base_path + "_openings.json"
+    if not (fd and Path(names_p).exists() and Path(ops_p).exists()):
+        return []
+    import entrance_storage as ES
+    runs = find_entrance_runs(det, img_path, base_path, cfg)
+    board = cfg["offsets_mm"]["board_face_inside"]
+    depth, unit = fd["entrance_depth_mm"], ES.UNIT
+    lay_b, col, sty = fd.get("built_in_layer", fd["layer"]), fd["color"], fd["style"]
+    out = []
+    for r in runs:
+        h, c = bool(r["horizontal"]), r["c_mm"]
+        # the wall the body leans on: parallel, its face (65 from the centre) about 400 from the body's far side
+        cand = [w for w in walls if w.h == h and w.a - 300 <= (r["a_mm"] + r["b_mm"]) / 2 <= w.b + 300
+                and 150 <= abs(w.c - c) <= 400]
+        if cand:
+            w = min(cand, key=lambda q: abs(abs(q.c - c) - (board + depth / 2)))
+            sg = 1 if w.c > c else -1  # the wall lies on this side
+            face = w.c - sg * board  # the wall's board face (model)
+        else:
+            # no wall in the model there (it was taken out, e.g. under a stair): the drawing's gray band is the wall
+            w = None
+            sg = r["wall_side"]
+            face = round((c + sg * depth / 2) / 25.0) * 25.0
+        far = face - sg * depth
+        # along the wall: a unit end meets a wall across it (centre +- 65) when one is near
+        a0 = r["a_mm"]
+        for q in walls:
+            if q.h != h and q.a - 200 <= c <= q.b + 200 and abs(q.c - a0) < 250:
+                a0 = q.c + board if q.c < a0 + 125 and abs(q.c + board - a0) < 250 else a0
+        if a0 == r["a_mm"]:
+            a0 = round(a0 / 25.0) * 25.0
+        spans, t = [], a0
+        for kind, t0, t1 in r["units"]:
+            ln = max(unit, round((t1 - t0) / unit) * unit)
+            spans.append((kind, t, t + ln))
+            t += ln
+        x0, x1 = a0, t
+        pt = (lambda along, across: (along, across)) if h else (lambda along, across: (across, along))
+        bx = [pt(x0, face), pt(x1, far)]
+        box_ = (min(bx[0][0], bx[1][0]), min(bx[0][1], bx[1][1]), max(bx[0][0], bx[1][0]), max(bx[0][1], bx[1][1]))
+        if any(min(box_[2], b[2]) - max(box_[0], b[0]) > 50 and min(box_[3], b[3]) - max(box_[1], b[1]) > 50 for b in BOXES):
+            continue  # (already drawn from the stretch taken out of the wall)
+        BOXES.append(box_)
+        for kind, t0, t1 in spans:
+            for p, q in (((t0, face), (t1, face)), ((t0, far), (t1, far)), ((t0, face), (t0, far)), ((t1, face), (t1, far))):
+                out.append(((pt(*p), pt(*q)), lay_b, col, sty))
+            if kind == "低":
+                d = fd["hatch_mm"]
+                while d < depth - 1:
+                    across = face - sg * d
+                    out.append(((pt(t0, across), pt(t1, across)), lay_b, col, sty))
+                    d += fd["hatch_mm"]
+            else:
+                out.append(((pt(t0, face), pt(t1, far)), lay_b, col, sty))  # one diagonal only (user 11/7)
+        print(f"玄関収納を描く（図面から）: {'横' if h else '縦'} 壁{('%g' % w.c) if w else 'なし（図面の灰色の帯）'} 面{face:g} {x0:g}〜{x1:g} "
+              + "＋".join(f"{'ハッチ' if k == '低' else '対角線'}{b - a:g}" for k, a, b in spans))
+    return out
+
+
+def dot_under_boxes(extras, cfg):
+    """The 框 shows through a 玄関収納 on the plan, but Jw_cad does not draw it through: only the part
+    overlapping the storage is dotted (user 11/7). Splits the 框 lines at the boxes."""
+    pc, fd = cfg["placement"], cfg.get("furniture_draw")
+    if not (BOXES and fd):
+        return extras
+    from shapely.geometry import box as sbox
+    out = []
+    for (p, q), layer, color, style in extras:
+        if (layer, color, style) != (pc["kamachi_layer"], pc["kamachi_color"], pc["kamachi_style"]):
+            out.append(((p, q), layer, color, style))
+            continue
+        seg = LineString([p, q])
+        inside = unary_union([sbox(*b) for b in BOXES])
+        for part, dotted in ((seg.difference(inside), False), (seg.intersection(inside), True)):
+            for g in getattr(part, "geoms", [part]):
+                if g.length > 1 and g.geom_type == "LineString":
+                    out.append(((g.coords[0], g.coords[-1]), layer, color, fd["dot_style"] if dotted else style))
+    return out
+
+
+def stud_lines(walls, cols, fits, cfg, placements=()):
+    """間柱 (user 11/7): 105 x 45 inside the walls, on the 455 grid, where no 柱 stands, with one
+    diagonal. 105 runs across the wall, 45 along it. Not inside an opening (a door's / window's
+    span) and not beside a column.
+    Beside a door: where the bay holds room for a stud beyond the frame (bay - 130 - frame width
+    >= 45), a stud stands against the frame's free end: 735 in 910, 1190 in 1365, 1645 in 1820
+    fit exactly with a stud at one column (1820 - 130 - 45 = 1645); a door with a few mm clearance
+    (1644) or much room is drawn with the stud pushed to the door side (user 11/7).
+    Returns extras lines (mm)."""
+    sc = cfg.get("stud")
+    if not sc:
+        return []
+    grid = cfg["input"]["grid_mm"]
+    lay = cfg["layers"]["wall"]
+    out = []
+    la, dp = sc["along_mm"] / 2, sc["depth_mm"] / 2
+    near = cfg["column"]["size_mm"] / 2 + la + sc["column_gap_mm"]
+    board = cfg["offsets_mm"]["board_face_inside"]
+    placed = []  # (wall id, t)
+
+    def draw(w, t):
+        if w.h:
+            r = [(t - la, w.c - dp), (t + la, w.c - dp), (t + la, w.c + dp), (t - la, w.c + dp)]
+        else:
+            r = [(w.c - dp, t - la), (w.c + dp, t - la), (w.c + dp, t + la), (w.c - dp, t + la)]
+        for i in range(4):
+            out.append(((r[i], r[(i + 1) % 4]), lay["layer"], lay["structure_color"], lay["style"]))
+        out.append(((r[0], r[2]), lay["layer"], lay["structure_color"], lay["style"]))  # one diagonal
+        placed.append((id(w), t))
+
+    seen = set()
+    for w in walls:
+        # a wall whose start sits on a 227.5 line (a 間崩し): the studs follow the wall's own grid
+        phase = w.a % grid
+        phase = phase if abs(phase - cfg["input"]["half_grid_mm"]) < 1.0 else 0.0
+        t = math.ceil((w.a - phase - 1e-6) / grid) * grid + phase
+        while t <= w.b + 1e-6:
+            x, y = w.pt(t)
+            key = (round(x), round(y))
+            ok = key not in seen
+            seen.add(key)
+            if ok and any(math.hypot(x - cx, y - cy) < near for cx, cy in cols):
+                ok = False
+            if ok and any(f[0] == w.h and abs(f[1] - w.c) < 100 and f[2] - sc["opening_gap_mm"] <= t <= f[3] + sc["opening_gap_mm"]
+                          for f in fits):
+                ok = False
+            if ok and (t - w.a < near or w.b - t < near):
+                ok = False  # (a wall end carries a column)
+            if ok:
+                draw(w, t)
+            t += grid
+    # beside the doors
+    for pl in placements:
+        if pl["word"] not in INTERIOR_DOORS:
+            continue
+        h, L = pl["horizontal"], pl["line"]
+        lo, hi = pl["span"]
+        w = next((w for w in walls if w.h == h and abs(w.c - L) < EPS and w.a - 1 <= lo and hi <= w.b + 1), None)
+        if w is None:
+            continue
+        along = [(c[0] if h else c[1]) for c in cols if abs((c[1] if h else c[0]) - L) < 1]
+        left = [t for t in along if t <= lo + 1]
+        right = [t for t in along if t >= hi - 1]
+        if not left or not right:
+            continue
+        gl, gr = lo - (max(left) + board), (min(right) - board) - hi
+        # beside a 両開き the stud stands 12.5 off the frame: the 石膏ボード goes between (user 11/12, プラン4)
+        off_ = sc.get("double_door_gap_mm", 12.5) if pl["word"] == "両開き" else 0
+        for gap, t_c in ((gl, lo - la - off_), (gr, hi + la + off_)):
+            # (the stud may touch the column face: the 12.5 board beside the column is not in its way, user 11/12)
+            if gap + (12.5 if off_ else 0) >= sc["along_mm"] + off_ - sc["door_gap_tol_mm"]:
+                if any(pid == id(w) and abs(t - t_c) < sc["along_mm"] for pid, t in placed):
+                    continue
+                draw(w, t_c)
+    return out
+
+
+def fill_wall_gaps(walls, ops_path, cfg):
+    """壁の小さなすき間をうめる (user 11/11, プラン3 2F: トイレの上の壁に455のすき間が残り、外周が
+    閉じていなかった。そこは天井点検口の記号が壁の線に重なっていて、壁が読めなかった所)。
+    同じ線上にある内壁と内壁のすき間が max_mm 以下で、そこに建具（見つかったもの）がなければ、壁でつなぐ。
+    戸のない出入口は910なので、455以下なら壁として扱う。"""
+    mx = cfg.get("wall_gap_fill", {}).get("max_mm")
+    if not mx:
+        return 0
+    ops = []
+    if Path(ops_path).exists():
+        data = json.load(open(ops_path, encoding="utf-8"))
+        ops = [o for o in (data["openings"] if isinstance(data, dict) else data) if not o.get("rejected")]
+    n = 0
+    for w in list(walls):
+        if w.ext:
+            continue
+        for v in walls:
+            if v is w or v.ext or v.h != w.h or abs(v.c - w.c) > 1 or v.a < w.b - EPS:
+                continue
+            gap = v.a - w.b
+            if gap < EPS or gap > mx + EPS:
+                continue
+            hit = False
+            for o in ops:
+                if (o["p1_mm"][1] if w.h else o["p1_mm"][0]) is None:
+                    continue
+                oc = o["p1_mm"][1] if w.h else o["p1_mm"][0]
+                oa, ob = sorted((o["p1_mm"][0], o["p2_mm"][0]) if w.h else (o["p1_mm"][1], o["p2_mm"][1]))
+                if abs(oc - w.c) < 1 and oa < v.a and ob > w.b:
+                    hit = True
+            if hit:
+                continue
+            walls.append(Wall(w.pt(w.b), w.pt(v.a), False))
+            n += 1
+            print(f"壁のすき間をうめる（{gap:g}）: {'横' if w.h else '縦'} {w.c:g}  {w.b:g}〜{v.a:g}")
+            break
+    if n:
+        walls[:] = merge_collinear(walls)
+    return n
+
+
+def close_exterior(walls, cfg):
+    """外壁は必ず外周を閉じる (user 11/7: プラン3 2F, the WIC's underside on the balcony side was
+    open). An exterior wall's end that touches no other exterior wall is a loose end; two loose ends facing
+    each other on one line (within max_gap_mm) are joined by an exterior wall, when the new wall
+    crosses no wall. Returns the new walls: they are added after the outline is taken and the walls
+    are classified (closing first would change the outline and turn the stub walls out toward a
+    balcony into interior walls, プラン3 2F, user 11/7)."""
+    c = cfg.get("exterior_close")
+    if not c:
+        return []
+    added = []
+    lines = [LineString([w.pt(w.a), w.pt(w.b)]) for w in walls]
+    loose = []
+    for i, w in enumerate(walls):
+        if not w.ext:
+            continue
+        for t in (w.a, w.b):
+            pt = Point(*w.pt(t))
+            if not any(j != i and walls[j].ext and lines[j].distance(pt) < 1.0 for j in range(len(walls))):
+                loose.append((w.pt(t), w))
+    done = set()
+    for i, (p, wp) in enumerate(loose):
+        for j in range(i + 1, len(loose)):
+            q, wq = loose[j]
+            horizontal = abs(p[1] - q[1]) < 1.0
+            if not (horizontal or abs(p[0] - q[0]) < 1.0) or wp is wq:
+                continue
+            if horizontal == wp.h or horizontal == wq.h:
+                continue  # the closing wall runs across the two walls' ends, not along them
+            gap = abs(p[0] - q[0]) if horizontal else abs(p[1] - q[1])
+            if gap < 1.0 or gap > c["max_gap_mm"] or (i, j) in done:
+                continue
+            seg = LineString([p, q])
+            if any(seg.intersection(l).length > 0 or (seg.crosses(l)) for l in lines):
+                continue
+            added.append(Wall(p, q, True))
+            lines.append(seg)
+            done.add((i, j))
+            print(f"外壁を閉じる（端がつながっていない2点を結ぶ）: {p} - {q}")
+    return added
+
+
+def furring_offsets(offsets, placements, cols, cfg):
+    """壁のふかし (user 11/8): a frame deeper than 155 (the 192 of the 3枚連動片引戸) is set with its
+    slide side's face 12.5 proud of the board face; the other side (the 中方立 side) stands out further
+    and the wall is built out there. The wall lies on both sides of the door (never across it): the
+    board-face line on the 中方立 side moves out to where the frame stands 12.5 proud of it, from each
+    frame end to the next column line, with returns back to the board face at the column lines. The
+    column-face line (52.5) is not moved, so the board face and the 52.5 line are drawn apart."""
+    fc = cfg.get("furring")
+    if not fc or not placements:
+        return offsets
+    board = cfg["offsets_mm"]["board_face_inside"]
+    proud = fc["proud_mm"]
+    lay = cfg["layers"]["wall"]
+    out = list(offsets)
+    for pl in placements:
+        wc = fc["words"].get(pl["word"])
+        if not wc:
+            continue
+        depth = wc["depth_mm"]
+        h, L = pl["horizontal"], pl["line"]
+        lo, hi = pl["span"]
+        d_plus = pl["sy"] if h else -pl["sy"]  # model direction of the block's local +y (the 中方立 side)
+        new_face = -(board + proud) + depth - proud
+        c_old, c_new = L + d_plus * board, L + d_plus * new_face
+        along = [(c[0] if h else c[1]) for c in cols if abs((c[1] if h else c[0]) - L) < 1]
+        left = [t for t in along if t <= lo + 1]
+        right = [t for t in along if t >= hi - 1]
+        # the 中方立 stands post_mm from the frame's left end (the block's local left: the model's low end when
+        # the block runs along +, else the high end); the built-out wall runs from the 中方立 to the column line
+        pw_ = wc.get("post_w_mm", 24.0)
+        post = (lo + wc["post_mm"] + pw_) if pl["sx"] == 1 else (hi - wc["post_mm"] - pw_)  # (stop before the post: its far face)
+        zones = [(max(left) if left else lo, lo), (post, min(right) if right else hi)] if pl["sx"] == 1 else                 [(max(left) if left else lo, post), (hi, min(right) if right else hi)]
+        kept = []
+        for (p, q), c, lb in out:
+            on_old = lb == "石膏ボード面" and abs((p[1] if h else p[0]) - c_old) < 0.5 and abs((q[1] if h else q[0]) - c_old) < 0.5
+            if not on_old:
+                kept.append(((p, q), c, lb))
+                continue
+            a_, b_ = sorted((p[0], q[0]) if h else (p[1], q[1]))
+            cuts = [(a_, b_)]
+            for za, zb in zones:  # the part of this line inside a zone beside the door is replaced
+                nxt = []
+                for s_, e_ in cuts:
+                    if e_ <= za or s_ >= zb:
+                        nxt.append((s_, e_))
+                        continue
+                    if s_ < za:
+                        nxt.append((s_, za))
+                    if e_ > zb:
+                        nxt.append((zb, e_))
+                cuts = nxt
+            for s_, e_ in cuts:
+                if e_ - s_ > 0.5:
+                    kept.append((((s_, c_old), (e_, c_old)) if h else ((c_old, s_), (c_old, e_)), c, lb))
+            for za, zb in zones:
+                s_, e_ = max(za, a_), min(zb, b_)
+                if e_ - s_ > 0.5:
+                    kept.append((((s_, c_new), (e_, c_new)) if h else ((c_new, s_), (c_new, e_)), c, lb))
+        out = kept
+        # the board surface between the 中方立 and the frame's far end: a plain line; and the board thickness
+        # (12.5) behind each built-out line (user 11/8)
+        d_end = (post, hi) if pl["sx"] == 1 else (lo, post)
+        if d_end[1] - d_end[0] > 0.5:
+            out.append((((d_end[0], c_old), (d_end[1], c_old)) if h else ((c_old, d_end[0]), (c_old, d_end[1])), lay["finish_color"], "石膏ボード面"))
+        c_thick = c_new - d_plus * 12.5  # the board's thickness lies behind its surface, toward the wall centre
+        for za, zb in zones:
+            if zb - za > 0.5:
+                out.append((((za, c_thick), (zb, c_thick)) if h else ((c_thick, za), (c_thick, zb)), lay["structure_color"], "ボード厚み"))
     return out
 
 
@@ -278,11 +861,38 @@ def footprint_of(walls):
     return fp
 
 
+SPUR_MAX = [0.0]
+
+
+def cfg_spur_max_mm():
+    return SPUR_MAX[0]
+
+
 def classify_boundary(walls, fp):
     ring = fp.exterior
     for w in walls:
         seg = LineString([w.pt(w.a), w.pt(w.b)])
         w.ext = ring.buffer(1).contains(seg)
+    # an exterior wall that lies along the outline but sticks out past it for one short stretch (a
+    # stub toward a balcony, at most spur_max long) is exterior as a whole: the 910 stub under the
+    # ホール's balcony side of プラン3 2F was drawn as an interior wall (user 11/7). Walls that run
+    # inside the outline, or lie wholly off it, keep the old reading.
+    if cfg_spur_max_mm():
+        inside = fp.buffer(-1)
+        band = ring.buffer(1)
+        for w in walls:
+            if w.ext or not w.ext_in:
+                continue
+            seg = LineString([w.pt(w.a), w.pt(w.b)])
+            if inside.intersects(seg) and seg.intersection(inside).length >= 1.0:
+                continue
+            on = seg.intersection(band)
+            if on.is_empty or on.length < 1.0:
+                continue  # wholly off the outline: old reading
+            off = seg.length - on.length
+            if 800.0 <= off <= cfg_spur_max_mm() + 1.0:  # (one 910 module: a stub, not a short return)
+                w.ext = True
+                print(f"外壁の短い突き出し（{off:.0f}mm）も外壁にする: {w.pt(w.a)} - {w.pt(w.b)}")
 
 
 def rings_to_edges(geom):
@@ -568,7 +1178,36 @@ def upper_positions(upper_walls, line_h, c):
     return pos
 
 
-def place_columns(walls, nodes, cfg, upper_walls, fittings=()):
+def shift_entrance_doors(placements, walls, cfg, runs=()):
+    """玄関ドアは、1820の間（壁の長さがちょうど1820）にある時、吊り元側へ200ずらす。吊り元側に玄関収納が
+    あれば戸先側へ200ずらす。開き勝手（吊り元の向き）は変えない（user 11/10, プラン5 1F）。
+    玄関収納 = 取り除いた家具のうち、玄関まわりで壁に直角に付くもの（FURN の run）。"""
+    sh = cfg["placement"].get("entrance_shift_mm")
+    if not sh:
+        return
+    bay = cfg["placement"].get("entrance_bay_mm", 1820)
+    for pl in placements:
+        if pl["word"] not in ENTRANCE_WORDS or not pl.get("hinge_known"):
+            continue
+        h, line = pl["horizontal"], pl["line"]
+        lo, hi = pl["span"]
+        w = next((w for w in walls if w.h == h and abs(w.c - line) < 1 and w.a - 1 <= lo and hi <= w.b + 1), None)
+        if w is None or abs((w.b - w.a) - bay) > 5:
+            continue
+        hinge_dir = 1 if pl["sx"] == -1 else -1  # the hinge end lies toward +along when the block runs toward -along
+        hinge_end = w.b if hinge_dir == 1 else w.a
+        stor = list(FURN) + [(r["horizontal"], r["c_mm"], r["a_mm"], r["b_mm"]) for r in runs]
+        storage = any(fh != h and abs(c - hinge_end) <= 500 and min(fa, fb) - 600 <= line <= max(fa, fb) + 600
+                      for fh, c, fa, fb in stor)
+        d = -hinge_dir if storage else hinge_dir
+        move = d * sh
+        x, y = pl["pos"]
+        pl["pos"] = (x + move, y) if h else (x, y + move)
+        pl["span"] = (lo + move, hi + move)
+        print(f"玄関ドアを{'戸先' if storage else '吊り元'}側へ{sh}ずらす（{bay}の間、{'吊り元側に玄関収納あり' if storage else '吊り元側に玄関収納なし'}）: {lo:.1f} -> {lo + move:.1f}")
+
+
+def place_columns(walls, nodes, cfg, upper_walls, fittings=(), fp=None, mullions=()):
     """fittings: [(horizontal, line, lo, hi, part word)] frame spans of placed doors/windows. A column never
     overlaps a fitting; where a fitting leaves a gap over the pitch, columns go to its sides
     (the grid lines just outside the frame) and the rest is filled as usual (user, 2026-10-22)."""
@@ -595,7 +1234,35 @@ def place_columns(walls, nodes, cfg, upper_walls, fittings=()):
                 print(f"建具に被る柱を置かない: {p} ({k})")
                 no_sides.update(hit)
                 continue
+            # 片引戸の中方立の付近（開口側の半分）にも置かない（user 11/13、プラン5 1F (2730,10920)）
+            if any(abs((p[1] if fh else p[0]) - line) < 1 and lo - hc < (p[0] if fh else p[1]) < hi + hc
+                   for fh, line, lo, hi in mullions):
+                print(f"片引戸の中方立のそばに柱を置かない: {p} ({k})")
+                continue
             cols[p] = k
+    # 外壁の出隅から910の位置は必ず柱にする (user 11/12). A convex corner = the point just inside
+    # the angle between its two walls lies in the footprint. Not where a fitting would be in the way.
+    if fp is not None:
+        DIRS = {"E": (1, 0), "W": (-1, 0), "N": (0, 1), "S": (0, -1)}
+        for p, kind in list(cols.items()):
+            arms = nodes.get(p)
+            if kind != "L" or not arms or len(arms) != 2:
+                continue
+            d1, d2 = (DIRS[a] for a in arms)
+            if not fp.contains(Point(p[0] + 20 * (d1[0] + d2[0]), p[1] + 20 * (d1[1] + d2[1]))):
+                continue  # 入隅
+            for d in (d1, d2):
+                q = (p[0] + 910 * d[0], p[1] + 910 * d[1])
+                h = d[1] == 0
+                w = next((w for w in walls if w.ext and w.h == h and w.contains(p) and w.contains(q)), None)
+                if w is None:
+                    continue
+                t = q[0] if h else q[1]
+                if any(fh == h and abs(line - w.c) < 1 and t + hc > lo + EPS and t - hc < hi - EPS
+                       for fh, line, lo, hi, _w in fittings):
+                    continue
+                if q not in cols:
+                    cols[q] = "出隅910"
     defaults = []  # remainder placed on the default side without upper-floor evidence
     for w in walls:
         spans = [(lo, hi) for fh, line, lo, hi, _word in fittings if fh == w.h and abs(line - w.c) < 1]
@@ -605,16 +1272,34 @@ def place_columns(walls, nodes, cfg, upper_walls, fittings=()):
                       if fh == w.h and abs(line - w.c) < 1 and word not in ENTRANCE_WORDS + ("シャッター",)
                       and i not in no_sides]
 
-        def clear(t, spans=spans):
-            return all(t + hc <= lo + EPS or t - hc >= hi - EPS for lo, hi in spans)
+        # 直交する壁の建具の枠にも柱を重ねない（プラン3 2F：片引戸の脇の柱 (2730,7280) が、
+        # 交わる壁の縦すべり窓の枠に乗っていた。自動検査 [D] で発見、11/13）
+        # 引戸は除く（戸袋は壁の中。プラン1 1F の正解図は、片引戸の戸袋の壁に両開きの脇の柱 (3640,7735) がある）
+        cross = [(line, lo, hi) for fh, line, lo, hi, word in fittings
+                 if fh != w.h and "引戸" not in word and "引違い戸" not in word]
+        cross += [(line, lo, hi) for fh, line, lo, hi in mullions if fh != w.h]
 
+        def clear(t, spans=spans, cross=cross, w=w):
+            if not all(t + hc <= lo + EPS or t - hc >= hi - EPS for lo, hi in spans):
+                return False
+            return not any(abs(t - line) < hc and w.c + hc > lo + EPS and w.c - hc < hi - EPS
+                           for line, lo, hi in cross)
+
+        # 室内建具の両脇には、グリッド（455）の交点に柱を置く（間柱ではなく柱）。建具の幅が小さくても
+        # 910のグリッドからずらさない：650・735・780も910の柱間に置く（user 11/13）
+        for i, (fh, line, lo, hi, word) in enumerate(fittings):
+            if fh != w.h or abs(line - w.c) >= 1 or word not in INTERIOR_DOORS:
+                continue
+            for t in (math.floor((lo - hc + EPS) / grid) * grid, math.ceil((hi + hc - EPS) / grid) * grid):
+                if w.contains(w.pt(t)) and clear(t):
+                    cols.setdefault(w.pt(t), "fitting")
         stops = sorted({(p[0] if w.h else p[1]) for p in cols if w.contains(p)})
         for s, e in zip(stops, stops[1:]):
             if e - s > pitch + EPS:
                 for lo, hi in side_spans:
                     if s < lo and hi < e:
                         for t in (math.floor((lo - hc + EPS) / grid) * grid, math.ceil((hi + hc - EPS) / grid) * grid):
-                            if s + EPS < t < e - EPS:
+                            if s + EPS < t < e - EPS and clear(t):
                                 cols.setdefault(w.pt(t), "fitting")
         stops = sorted({(p[0] if w.h else p[1]) for p in cols if w.contains(p)})
         for s, e in zip(stops, stops[1:]):
@@ -639,6 +1324,17 @@ def place_columns(walls, nodes, cfg, upper_walls, fittings=()):
                     if len(from_b) == len(from_a) and on910(from_b) > on910(from_a):
                         choice = from_b
                     marked = True
+                    # a leftover of 455 (e.g. 2275 = 1820 + 455) leaves 455 on one side and 1820 on
+                    # the other: unbalanced. The last bay (pitch + 455) is split 910 / 1365 instead
+                    # (user 11/12). 910 from the end that puts the column on the 910 grid.
+                    if abs(r - grid) < EPS:
+                        base_a = [s + i * pitch for i in range(1, n)]
+                        cand_a = base_a + [e - (pitch + r) + 910]  # 910 from the last full column
+                        cand_b = base_a + [e - 910]                # 1365 from it
+                        cand = [t for t in (cand_a if on910(cand_a) >= on910(cand_b) else cand_b)
+                                if s + EPS < t < e - EPS and clear(t)]
+                        if len(cand) == len(choice):
+                            choice = cand
             for t in choice:
                 cols.setdefault(w.pt(t), "pitch")
             if marked:
@@ -647,10 +1343,12 @@ def place_columns(walls, nodes, cfg, upper_walls, fittings=()):
 
 
 # ---------------------------------------------------------------- output
-def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, extras=()):
+def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, extras=(), toilets=()):
     S = cfg["layers"]["scale"]
     L = cfg["layers"]
     d = ezjww.new(paper_size=3)
+    import jww_env
+    jww_env.apply_env(d)  # 環境設定 参考図面の .JWF（色・線幅・線種・レイヤグループ）
     g = d.options["layer_groups"][L["group"]]
     g["name"] = L["group_name"]
     g["scale"] = S
@@ -680,12 +1378,80 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
     # fittings: one block definition per part used, one reference per opening
     if placements:
         by_name = {v[0]: v[1] for v in (lib or {}).values()}
-        for name in dict.fromkeys(pl["block"] for pl in placements):
-            d.add_block(name, by_name[name])
-        for pl in placements:
-            msp.add_block_ref(pl["block"], ((pl["pos"][0] - cx) / S, (pl["pos"][1] - cy) / S),
-                              scale_x=float(pl["sx"]), scale_y=float(pl["sy"]), rotation=float(pl["rot"]),
-                              jwwattribs={"layer": wl["layer"]})
+        # 建具 (windows / doors) sit on a layer of their own, apart from the 柱 and walls: a range
+        # selection of a part's base point (a column centre) must not pick the column up too
+        # (user 11/12, プラン4 1F; 参考図面 keeps 建具 on layer 5, columns on others)
+        fl = L.get("fitting", wl)["layer"]
+        if L.get("fitting_as_block", False):
+            import copy
+            for name in dict.fromkeys(pl["block"] for pl in placements):
+                ents = copy.deepcopy(by_name[name])
+                for e in ents:
+                    e["base"]["layer"] = fl
+                d.add_block(name, ents)
+            for pl in placements:
+                msp.add_block_ref(pl["block"], ((pl["pos"][0] - cx) / S, (pl["pos"][1] - cy) / S),
+                                  scale_x=float(pl["sx"]), scale_y=float(pl["sy"]), rotation=float(pl["rot"]),
+                                  jwwattribs={"layer": fl})
+        else:
+            # no blocks (グループ化なし, user 11/12): the part's lines and arcs are written out as
+            # plain entities, moved / mirrored / rotated into place
+            import math
+            for pl in placements:
+                ang = math.radians(pl["rot"])
+                ca, sa = math.cos(ang), math.sin(ang)
+                sx, sy = pl["sx"], pl["sy"]
+
+                def tr(u, v, pl=pl, ca=ca, sa=sa, sx=sx, sy=sy):
+                    u, v = u * S * sx, v * S * sy
+                    return (pl["pos"][0] + u * ca - v * sa, pl["pos"][1] + u * sa + v * ca)
+                for e in by_name[pl["block"]]:
+                    if e["base"]["pen_color"] == 6 and pl["word"] in INTERIOR_DOORS:
+                        continue  # 室内建具の青（色6）の線は要らない（user 11/13）。水色（色1）だけ
+                    at = {"layer": fl, "pen_color": e["base"]["pen_color"], "pen_style": e["base"]["pen_style"]}
+                    if e["type"] == "LINE":
+                        p1, p2 = tr(e["start_x"], e["start_y"]), tr(e["end_x"], e["end_y"])
+                        msp.add_line(((p1[0] - cx) / S, (p1[1] - cy) / S), ((p2[0] - cx) / S, (p2[1] - cy) / S),
+                                     jwwattribs=at)
+                    elif e["type"] == "ARC":
+                        c = tr(e["center_x"], e["center_y"])
+                        a0, sw = e["start_angle"], e["arc_angle"]  # radians, CCW
+                        a1 = a0 + sw
+                        # direction of an angle after the mirror and the rotation
+                        mv = lambda a: math.atan2(sy * math.sin(a), sx * math.cos(a)) + ang  # noqa: E731
+                        n0, n1 = mv(a0), mv(a1)
+                        if sx * sy < 0:  # a mirror reverses the sweep: the end becomes the start
+                            n0, n1 = n1, n0
+                        st = round(math.degrees(n0), 4) % 360.0
+                        st = 0.0 if st >= 359.9999 else st
+                        swd = round(math.degrees(n1 - n0), 4) % 360.0 or 360.0
+                        msp.add_arc(((c[0] - cx) / S, (c[1] - cy) / S), e["radius"] * abs(sx), st, swd, jwwattribs=at)
+    # 便器：検出した向き・位置に置く（user 11/13）。形は cfg["toilet_part"]（部品の json のパス、
+    # ROOT から）。"generic" か、ファイルがなければ汎用の形（配布用、11/14）
+    if toilets:
+        import math
+        tp = cfg.get("toilet_part", "generic")
+        tp_path = Path(__file__).resolve().parent.parent / tp
+        part = generic_toilet() if tp == "generic" or not tp_path.exists() else json.load(open(tp_path, encoding="utf-8"))
+        fd_ = cfg["furniture_draw"]
+        at_ = {"layer": fd_["layer"], "pen_color": fd_["color"], "pen_style": fd_["style"]}
+        half = part["長さ_mm"] / 2
+        for tl in toilets:
+            fx, fy = tl["front"]
+            ox, oy = tl["tip_mm"][0] - fx * half, tl["tip_mm"][1] - fy * half  # 便器の中心
+            rot = math.atan2(fy, fx)
+
+            def T(u, v, ox=ox, oy=oy, fx=fx, fy=fy):
+                return (((ox + u * fx - v * fy) - cx) / S, ((oy + u * fy + v * fx) - cy) / S)
+            for e in part["entities"]:
+                if e["t"] == "L":
+                    msp.add_line(T(e["p"][0], e["p"][1]), T(e["p"][2], e["p"][3]), jwwattribs=at_)
+                elif e["t"] == "A":
+                    st = round(math.degrees(e["a0"] + rot), 4) % 360.0
+                    st = 0.0 if st >= 359.9999 else st
+                    msp.add_arc(T(*e["c"]), e["r"] / S, st, round(math.degrees(e["sw"]), 4) % 360.0 or 360.0, jwwattribs=at_)
+                else:
+                    msp.add_circle(T(*e["c"]), e["r"] / S, jwwattribs=at_)
     # print alignment marks (paper mm)
     pm = cfg["print_marks_mm"]
 
@@ -702,6 +1468,25 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
     for i in range(4):
         pline(pts[i], pts[(i + 1) % 4])
     d.saveas(path)
+
+
+def generic_toilet(length=736.0, width=386.0):
+    """汎用の便器（メーカーなし）：便器の中心が原点、前（とがった側）が +x。後ろにタンク、前にだ円の便座"""
+    import math
+    hl, hw = length / 2, width / 2
+    tank = 180.0
+    ents = []
+    pts = [(-hl, -hw), (-hl + tank, -hw), (-hl + tank, hw), (-hl, hw)]
+    for i in range(4):
+        a, b = pts[i], pts[(i + 1) % 4]
+        ents.append({"t": "L", "p": [a[0], a[1], b[0], b[1]]})
+    a_, b_ = (length - tank) / 2 + 2, hw - 15  # だ円（タンクの前から先端まで）
+    c0 = -hl + tank - 2 + a_
+    n = 40
+    for k in range(n):
+        t0, t1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+        ents.append({"t": "L", "p": [c0 + a_ * math.cos(t0), b_ * math.sin(t0), c0 + a_ * math.cos(t1), b_ * math.sin(t1)]})
+    return {"名前": "汎用の便器", "長さ_mm": length, "幅_mm": width, "基準": "便器の中心", "前": "+x", "entities": ents}
 
 
 def frame_crossings(pl, lib, S, h, c_):
@@ -745,6 +1530,13 @@ def cut_openings(offsets, placements, cfg, reach=160, lib=None):
                 cross = [t for t in frame_crossings(pl, lib, S, h, c_) if lo - 1 <= t <= hi + 1]
             if len(cross) >= 2 and max(cross) - min(cross) > 100:
                 lo, hi = min(cross), max(cross)
+            elif pl["word"] in ("玄関片開き", "玄関親子") and lib and pl["block"] in lib:
+                # the frame's outer ears stand past the span: the exterior layer lines (通気層・外壁面)
+                # stop at the first frame line they meet instead of running into the ears
+                # (user 11/12, プラン4 1F 玄関ドア: the two 外壁材 lines stuck out)
+                ear = frame_crossings(pl, lib, S, h, c_)
+                lo = min([lo] + [t for t in ear if lo - 60 <= t < lo])
+                hi = max([hi] + [t for t in ear if hi < t <= hi + 60])
             elif pl["word"] == "片引戸":
                 # the pocket half is inside the wall: the wall face lines run on over it up to the
                 # 中方立 (middle of the part); only the doorway half is cut (user 10/24). The part's
@@ -934,6 +1726,21 @@ def jamb_closures(offsets, placements, cols, walls, cfg):
     return out + fills
 
 
+def join_kos(kos, extra, gap=200):
+    """The 腰壁 stretches taken from furniture_runs join a 腰壁 already found on the same line when
+    they meet it (プラン5 1F: the counter's edge runs on into the 腰壁 of the kitchen); the rest are
+    added as they are."""
+    kos = [dict(k) for k in kos]
+    for e in extra:
+        for k in kos:
+            if k["horizontal"] == e["horizontal"] and abs(k["line_mm"] - e["line_mm"]) < 1 and                     e["a_mm"] - gap <= k["b_mm"] and e["b_mm"] + gap >= k["a_mm"]:
+                k["a_mm"], k["b_mm"] = min(k["a_mm"], e["a_mm"]), max(k["b_mm"], e["b_mm"])
+                break
+        else:
+            kos.append(e)
+    return kos
+
+
 def koshikabe_lines(kos, walls, fp, cfg, voids=()):
     """腰壁 from koshikabe_detect.py: 笠木 band ±75 from the centre, the centre line, and at a
     wall junction short ticks joining the 笠木 to the wall's board face. A free end: the 笠木
@@ -1012,7 +1819,10 @@ def koshikabe_lines(kos, walls, fp, cfg, voids=()):
             elif j is not None and partners:
                 ends.append((j + sgn * kc["stair_past_grid_mm"], j, True))
             elif j is not None:
-                ends.append((j - sgn * col, j, True))  # (笠木 end, centre-line end, at a wall)
+                # (笠木 end, centre-line end, at a wall): both stop at the board face, not inside
+                # the 石膏ボード (user 11/12, プラン3: the 腰壁 went through the board)
+                # (the 芯 line still runs to the wall centre, as the user's own drawing has it)
+                ends.append((j - sgn * board, j, False))  # closed by a plain cross line at the board face
             else:
                 g = round((t - sgn * k) / grid) * grid + sgn * k
                 kt = g if abs(g - t) <= 20 else round(t / 5) * 5
@@ -1105,11 +1915,13 @@ def entrance_casing(offsets, placements, cfg):
     return offsets, extras
 
 
-def window_extras(placements, cfg, spaces=()):
+def window_extras(placements, cfg, spaces=(), lib=None):
     """Wall returns and 窓台 at each window: [((p, q), layer, color, style)] in model mm.
     Returns run from the room-side face to the window frame's interior face: the column-face /
     下地 line (52.5, color 1) at the frame edge, the board face (65, color 5) 12.5 inside it.
-    窓台: 12.5 into the walls each side (= frame width), 10 in front of the board face."""
+    窓台: 12.5 into the walls each side (= frame width), 10 in front of the board face.
+    戻り線は、その位置で最初に当たる窓の部品の線まで伸ばす（部品の一番奥の線で止めると、縦すべり窓
+    の端で枠まで15届かなかった。user 11/14 プラン3 2F）。当たらなければ一番奥の線で止める。"""
     off = cfg["offsets_mm"]
     lay = cfg["layers"]["wall"]
     sill = cfg["placement"]["window_sill"]
@@ -1129,11 +1941,31 @@ def window_extras(placements, cfg, spaces=()):
         def across(t, a, b, h=pl["horizontal"]):  # a segment across the wall at along t
             return ((t, a), (t, b)) if h else ((a, t), (b, t))
 
+        segs_ = []
+        if lib and pl["block"] in lib:
+            segs_ = block_lines_mm([e for e in lib[pl["block"]][1] if e["type"] == "LINE"], pl, cfg["layers"]["scale"])
+
+        def reach(t, start, inward):
+            """壁の中心線に直角、along=t の線を start から外へ進めて、最初に当たる部品の線"""
+            tt = t + inward * 0.5  # 枠の端ちょうどは避けて、少し窓の内側で見る
+            best = None
+            for (p1, p2) in segs_:
+                (a1, c1), (a2, c2) = (p1, p2) if pl["horizontal"] else ((p1[1], p1[0]), (p2[1], p2[0]))
+                if abs(a2 - a1) < 1e-6 or not (min(a1, a2) <= tt <= max(a1, a2)):
+                    continue  # (along の向きの線と、届かない線は見ない)
+                c = c1 + (c2 - c1) * (tt - a1) / (a2 - a1)
+                d = (c - start) * s
+                if d > 0.5 and (best is None or d < best):
+                    best = d
+            if best is None or abs(start + s * best - face) > 30:
+                return face  # (当たらない・離れすぎ＝部品の別の所：今までどおり)
+            return start + s * best
+
         st = lay["style"]
-        for t in (lo, hi):
-            out.append((across(t, L - s * col, face), lay["layer"], lay["structure_color"], st))
-        for t in (lo + embed, hi - embed):
-            out.append((across(t, L - s * board, face), lay["layer"], lay["finish_color"], st))
+        for t, inw in ((lo, 1), (hi, -1)):
+            out.append((across(t, L - s * col, reach(t, L - s * col, inw)), lay["layer"], lay["structure_color"], st))
+        for t, inw in ((lo + embed, 1), (hi - embed, -1)):
+            out.append((across(t, L - s * board, reach(t, L - s * board, inw)), lay["layer"], lay["finish_color"], st))
         if no_sill:
             print(f"窓台なし（ガレージへのドア代わりの窓）: {pl['block']}")
             continue
@@ -1366,7 +2198,8 @@ def draw_check(img_path, det, walls, offsets, cols, defaults, out, title):
 def main():
     cfg_path, walls_path, img_path, prefix = sys.argv[1:5]
     upper_path = sys.argv[5] if len(sys.argv) > 5 else None
-    cfg = json.load(open(cfg_path, encoding="utf-8"))
+    import spec as _spec
+    cfg = _spec.load_cfg(cfg_path)
     grid = cfg["input"]["half_grid_mm"]  # walls may sit on 227.5 lines (closets)
     walls, det = load_walls(walls_path, grid)
     bare = bare_lines(det, img_path, walls_path.replace("_walls.json", "_openings.json"), cfg)
@@ -1374,6 +2207,10 @@ def main():
         walls, det = load_walls(walls_path, grid, bare)
     furniture_ops = drop_furniture_lines(walls, walls_path.replace("_walls.json", "_openings.json"), cfg)
     furniture_ops |= stair_foot_openings(walls, walls_path, cfg)
+    extra_kos = furniture_runs(walls, det, img_path, walls_path.replace("_walls.json", ""), cfg)
+    fill_wall_gaps(walls, walls_path.replace("_walls.json", "_openings.json"), cfg)
+    SPUR_MAX[0] = cfg.get("exterior_close", {}).get("spur_max_mm", 0.0)
+    walls.extend(close_exterior(walls, cfg))  # (the outline must close: the closing wall is part of it)
     fp = footprint_of(walls)
     # outside spaces inside the building outline (garage, porch, balcony; user 10/24): the
     # interior outline leaves them out, their walls get the outside-space build-up.
@@ -1447,11 +2284,29 @@ def main():
     placements, skipped, lib, extras = [], [], {}, []
     ops_path = walls_path.replace("_walls.json", "_openings.json")
     root = Path(__file__).resolve().parent.parent
-    lib_paths = sorted(root.glob(cfg["placement"]["library"].replace("\\", "/")))
+    libs_ = cfg["placement"]["library"]
+    lib_paths = sorted({p for g in ([libs_] if isinstance(libs_, str) else libs_)
+                        for p in root.glob(g.replace("\\", "/"))})  # 文字列でも、リストでもよい
     if Path(ops_path).exists() and lib_paths:
         import place_fittings as pf
         from opening_detect import Mapper
         lib = pf.load_library([str(p) for p in lib_paths])
+        # a 引違い戸's frame must not be thinner than the wall (board face to board face, 130):
+        # the frame faces move out to the board faces (user 11/12, プラン4 1F 洋室の入口 W1644, 115 deep)
+        bf = cfg["placement"].get("door_frame_half_mm", 77.5)  # 建具枠は155（壁130＋12.5×2、user 11/12）
+        S_ = cfg["layers"]["scale"]
+        for key, v in lib.items():
+            if v[3] != "引違い戸":
+                continue
+            ents = [e for e in v[1] if e["type"] == "LINE"]
+            ys = [y * S_ for e in ents for y in (e["start_y"], e["end_y"])]
+            half = max(abs(y) for y in ys)
+            if half < bf - 0.5:
+                d_ = (bf - half) / S_
+                for e in ents:
+                    for k in ("start_y", "end_y"):
+                        if abs(abs(e[k] * S_) - half) < 0.5:
+                            e[k] += d_ if e[k] > 0 else -d_
         ops = json.load(open(ops_path, encoding="utf-8"))
         for o in (ops["openings"] if isinstance(ops, dict) else ops):
             if o.get("no") in furniture_ops:
@@ -1485,6 +2340,10 @@ def main():
             return False
 
         placements, skipped = pf.plan(ops, lib, cfg, Mapper(det, cfg["input"]["grid_mm"]), outside, larger_side, perp_at)
+        shift_entrance_doors(placements, walls, cfg, find_entrance_runs(det, img_path, walls_path.replace("_walls.json", ""), cfg))
+        for pl in placements:
+            if pl["word"] in ENTRANCE_WORDS:
+                print(f"玄関ドア: {'横' if pl['horizontal'] else '縦'} 線{pl['line']:g} 枠{pl['span'][0]:.1f}〜{pl['span'][1]:.1f} 幅{pl['width']:g} 吊り元{'小' if pl['sx'] == 1 else '大'}側")
         # a window in an outside-space wall with no added insulation (a garage's outer wall not in
         # line with the house's exterior walls): its reference is the sheathing's outer face, 60
         # in from where the added insulation's would be (プラン3 1F ガレージ FIX, user 10/27)
@@ -1506,12 +2365,54 @@ def main():
         # (the window's reference mark) keeps 50 off the other wall's exterior face (user's note on
         # プラン3 1F, 10/26: W1540 moved 8330 -> 8394.5 = face 8344.5 + 50)
         gap = cfg["placement"]["window_corner_gap_mm"]
-        for pl in placements:
-            if pl["word"] not in pf_WINDOWS:
+
+        def shift(q, mv):
+            x, y = q["pos"]
+            q["pos"] = (x + mv, y) if q["horizontal"] else (x, y + mv)
+            q["span"] = (q["span"][0] + mv, q["span"][1] + mv)
+
+        def trim_margins(q):
+            """枠の端（span）から部品の一番外の線までの出（lo側, hi側）"""
+            if not (lib and q["block"] in lib):
+                return 0.0, 0.0
+            ents_ = [e for e in lib[q["block"]][1] if e["type"] == "LINE"]
+            ts_ = [t for (a_, b_) in block_lines_mm(ents_, q, cfg["layers"]["scale"])
+                   for t in ((a_[0], b_[0]) if q["horizontal"] else (a_[1], b_[1]))]
+            if not ts_:
+                return 0.0, 0.0
+            return max(0.0, q["span"][0] - min(ts_)), max(0.0, max(ts_) - q["span"][1])
+        # 並んだ窓（連窓：枠どうしが100未満）はひとまとめにして動かす（プラン5 2F の W300×2 が重なった）
+        groups = []
+        for pl in sorted((p for p in placements if p["word"] in pf_WINDOWS),
+                         key=lambda p: (p["horizontal"], round(p["line"], 1), p["span"][0])):
+            g = groups[-1] if groups else None
+            if g and g[0]["horizontal"] == pl["horizontal"] and abs(g[0]["line"] - pl["line"]) < 1 \
+                    and pl["span"][0] - max(q["span"][1] for q in g) < 100:
+                g.append(pl)
+            else:
+                groups.append([pl])
+        # 連窓の窓と窓の間（枠と枠）は105（柱1本分）。全体の中心は動かさない（user 11/14）
+        mull = cfg["column"]["size_mm"]
+        for grp in groups:
+            if len(grp) < 2:
                 continue
+            c0 = (grp[0]["span"][0] + grp[-1]["span"][1]) / 2
+            total = sum(q["span"][1] - q["span"][0] for q in grp) + mull * (len(grp) - 1)
+            t = c0 - total / 2
+            for q in grp:
+                mv = t - q["span"][0]
+                if abs(mv) > 0.05:
+                    shift(q, mv)
+                    print(f"連窓の窓と窓の間を{mull:g}に（{mv:+.1f}）: {q['block']}")
+                t = q["span"][1] + mull
+        for grp in groups:
+            pl = grp[0]
             h, L, s = pl["horizontal"], pl["line"], pl["outward"]
-            lo, hi = pl["span"]
+            lo, hi = grp[0]["span"][0], grp[-1]["span"][1]
             move = 0.0
+            # the gap is kept from the part's outermost line (the frame's trim stands 25 past the
+            # span), to the outermost line of the other exterior wall (user 11/12, プラン4 1F)
+            m_lo, m_hi = trim_margins(grp[0])[0], trim_margins(grp[-1])[1]
             # (inside a garage the last finish is the 12.5 board, 152 from the centre, not the siding)
             mid = (lo + hi) / 2
             probe = Point(mid, L + s * 300) if h else Point(L + s * 300, mid)
@@ -1521,18 +2422,81 @@ def main():
             for w in walls:
                 if not w.ext or w.h == h or not (w.a - 1 <= L + s * 200 <= w.b + 1):
                     continue  # (a perpendicular exterior wall running on outside the window's wall)
-                if lo - 400 < w.c <= lo and lo < w.c + face_d + gap:
-                    move = max(move, w.c + face_d + gap - lo)
-                if hi <= w.c < hi + 400 and hi > w.c - face_d - gap:
-                    move = min(move, w.c - face_d - gap - hi)
+                if lo - 400 < w.c <= lo and lo < w.c + face_d + gap + m_lo:
+                    move = max(move, w.c + face_d + gap + m_lo - lo)
+                if hi <= w.c < hi + 400 and hi > w.c - face_d - gap - m_hi:
+                    move = min(move, w.c - face_d - gap - m_hi - hi)
+            if move:
+                for q in grp:
+                    shift(q, move)
+                    print(f"入隅に近い窓を外壁面から{gap}離す（{move:+.1f}）: {q['block']}")
+        # 入隅の外壁と取り合う窓で、反対の端に間仕切りが直交している（柱が要る）とき：入隅からは
+        # なるべく離すが、優先は「入隅と反対の柱に寄せる」。枠の端＝柱の面から12.5（柱芯から65）
+        # （user 11/13、プラン3 2F の縦すべり窓W640：間仕切りの柱 (2730,7280) に枠が食い込んでいた）
+        # この納めができるのは窓幅640まで（特注を除く。user 11/14）
+        hc_ = cfg["column"]["size_mm"] / 2
+        edge_ = hc_ + 12.5
+        for grp in groups:
+            pl = grp[0]
+            h, L, s = pl["horizontal"], pl["line"], pl["outward"]
+            lo, hi = grp[0]["span"][0], grp[-1]["span"][1]
+            if hi - lo > 640 + 1:
+                continue
+            corner_lo = any(w.ext and w.h != h and w.a - 1 <= L + s * 200 <= w.b + 1 and lo - 600 < w.c <= lo for w in walls)
+            corner_hi = any(w.ext and w.h != h and w.a - 1 <= L + s * 200 <= w.b + 1 and hi <= w.c < hi + 600 for w in walls)
+            if corner_lo == corner_hi:
+                continue
+            # 入隅と反対の端のそばで、室内側から直交してくる間仕切り（外壁には付く）
+            inner = [w.c for w in walls if not w.ext and w.h != h and w.a - 1 <= L <= w.b + 1
+                     and w.a - 1 <= L - s * 200 <= w.b + 1
+                     and ((hi - 455 < w.c < hi + 455) if corner_lo else (lo - 455 < w.c < lo + 455))]
+            if not inner:
+                continue
+            t = min(inner, key=lambda c: abs(c - (hi if corner_lo else lo)))
+            move = (t - edge_ - hi) if corner_lo else (t + edge_ - lo)
+            if abs(move) < 0.5:
+                continue
+            for q in grp:
+                x, y = q["pos"]
+                q["pos"] = (x + move, y) if h else (x, y + move)
+                q["span"] = (q["span"][0] + move, q["span"][1] + move)
+                print(f"入隅の窓を反対の間仕切りの柱に寄せる（柱面から12.5、{move:+.1f}）: {q['block']}")
+        # 室内の開き戸は910グリッドの柱間の内側に置く：枠が、間仕切りの取り合う910の線（柱の位置）に
+        # かかっていたら、柱面から12.5の所まで柱間の内側へずらす（user 11/13、プラン5 1F 片開きW650）
+        g910 = 2 * cfg["input"]["grid_mm"]
+        for pl in placements:
+            if pl["word"] not in ("片開き", "両開き", "折戸"):
+                continue
+            h, L = pl["horizontal"], pl["line"]
+            lo, hi = pl["span"]
+            if hi - lo + 2 * edge_ > g910 + 4:
+                continue
+            k = math.floor(((lo + hi) / 2) / g910)
+            g0, g1 = k * g910, (k + 1) * g910
+
+            def meets(g):
+                return any(w.h != h and abs(w.c - g) < 1 and w.a - 1 <= L <= w.b + 1 for w in walls)
+            move = 0.0
+            if lo < g0 + edge_ - 0.5 and meets(g0):
+                move = g0 + edge_ - lo
+            elif hi > g1 - edge_ + 0.5 and meets(g1):
+                move = g1 - edge_ - hi
             if move:
                 x, y = pl["pos"]
                 pl["pos"] = (x + move, y) if h else (x, y + move)
                 pl["span"] = (lo + move, hi + move)
-                print(f"入隅に近い窓を外壁面から{gap}離す（{move:+.1f}）: {pl['block']}")
+                print(f"開き戸を910の柱間の内側へ（{move:+.1f}）: {pl['block']}")
+        if os.environ.get("WIN_DEBUG"):
+            for pl in placements:
+                if pl["word"] not in pf_WINDOWS or pl["block"] not in lib:
+                    continue
+                h_ = pl["horizontal"]
+                ents_ = [e for e in lib[pl["block"]][1] if e["type"] == "LINE"]
+                ts = [t for (a_, b_) in block_lines_mm(ents_, pl, cfg["layers"]["scale"]) for t in ((a_[0], b_[0]) if h_ else (a_[1], b_[1]))]
+                print("WINDBG", pl["block"], "span", [round(v, 1) for v in pl["span"]], "extent", round(min(ts), 1), round(max(ts), 1), "line", pl["line"])
         offsets = cut_openings(offsets, placements, cfg, lib=lib)
         offsets, casing = entrance_casing(offsets, placements, cfg)
-        extras = window_extras(placements, cfg, spaces) + casing
+        extras = window_extras(placements, cfg, spaces, lib=lib) + casing
         names_path = walls_path.replace("_walls.json", "_部屋名.json")
         if Path(names_path).exists():
             names = json.load(open(names_path, encoding="utf-8"))
@@ -1541,7 +2505,7 @@ def main():
             extras += kamachi_lines(list(ops) + open_k, names, M, cfg, walls)
     kos_path = walls_path.replace("_walls.json", "_腰壁.json")
     kos = []
-    if Path(kos_path).exists():
+    if Path(kos_path).exists() or extra_kos:
         voids = []
         npath = walls_path.replace("_walls.json", "_部屋名.json")
         if upper_path is None and Path(npath).exists():  # (2F: on 1F 「上部吹抜」 is the floor above)
@@ -1549,16 +2513,49 @@ def main():
             Mv = Mapper(det, cfg["input"]["grid_mm"])
             voids = [(Mv.xmm(n["x"]), Mv.ymm(n["y"])) for n in json.load(open(npath, encoding="utf-8"))
                      if n.get("name") == "吹抜"]
-        k_lines, kos = koshikabe_lines(json.load(open(kos_path, encoding="utf-8")), walls, fp, cfg, voids)
+        k_lines, kos = koshikabe_lines(join_kos(json.load(open(kos_path, encoding="utf-8")) if Path(kos_path).exists() else [], extra_kos), walls, fp, cfg, voids)
         extras += k_lines
-    fits = [(pl["horizontal"], pl["line"], *pl["span"], pl["word"]) for pl in placements] + shutters
-    cols, defaults = place_columns(walls, nodes, cfg, upper, fits)
+    # 通り芯 added by hand-made data: 上がり框 (a stair's last step) has a beam, so a 芯 line is drawn
+    # across the stair, which also divides it (user 11/12, プラン3 2F; file <階>_通り芯.json,
+    # [{"horizontal": false, "line_mm": 6370, "a_mm": 6370, "b_mm": 7280}])
+    tr_path = walls_path.replace("_walls.json", "_通り芯.json")
+    if Path(tr_path).exists():
+        cl = cfg["layers"]["center"]
+        for t in json.load(open(tr_path, encoding="utf-8")):
+            c, a, b = t["line_mm"], t["a_mm"], t["b_mm"]
+            extras.append((((a, c), (b, c)) if t["horizontal"] else ((c, a), (c, b)),
+                           cl["layer"], cl["color"], cl["style"]))
+            print(f"通り芯（{t.get('label', '上がり框')}）: {'横' if t['horizontal'] else '縦'} {c} {a}〜{b}")
+    fits =[(pl["horizontal"], pl["line"], *pl["span"], pl["word"]) for pl in placements] + shutters
+    # 片引戸の開口側の半分（中方立まで＋150）：直交する壁の柱はここに置かない（中方立の付近に柱は置けない。
+    # 戸袋側の半分には置ける：プラン1 1F の正解図 (3640,7735)。user 11/13）
+    mullions = []
+    for pl in placements:
+        if pl["word"] != "片引戸" or not lib or pl["block"] not in lib:
+            continue
+        off_, W_ = lib[pl["block"]][5], lib[pl["block"]][4]
+        base = pl["pos"][0] if pl["horizontal"] else pl["pos"][1]
+        e1, e2 = base + pl["sx"] * off_, base + pl["sx"] * (off_ + W_ / 2 + 150)
+        mullions.append((pl["horizontal"], pl["line"], min(e1, e2), max(e1, e2)))
+    cols, defaults = place_columns(walls, nodes, cfg, upper, fits, fp, mullions)
+    extras += stud_lines(walls, cols, fits, cfg, placements)
     if placements:
         offsets = jamb_closures(offsets, placements, cols, walls, cfg)
-    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras)
+        offsets = furring_offsets(offsets, placements, cols, cfg)
+    extras += furniture_symbols(det, img_path, walls_path.replace("_walls.json", ""), cfg, walls)
+    extras += entrance_storage_symbols(det, img_path, walls_path.replace("_walls.json", ""), cfg, walls)
+    extras = dot_under_boxes(extras, cfg)
+    toilet_path = walls_path.replace("_walls.json", "_便器.json")
+    toilets = json.load(open(toilet_path, encoding="utf-8")) if Path(toilet_path).exists() else []
+    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets)
     # model mm = paper mm * scale + center; score_walls.py needs this to read corrected drawings back
-    json.dump({"center_mm": center, "scale": cfg["layers"]["scale"]},
+    json.dump({"center_mm": center, "scale": cfg["layers"]["scale"],
+               "placements": [{k: pl[k] for k in ("block", "word", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}
+                              for pl in placements]},  # 建具の置き方（部品の差し替え用）
               open(prefix + "_meta.json", "w", encoding="utf-8"))
+    # 建具の枠に入り込んだ紫線・壁の線を切る（検査 C・D と同じ箱で。入隅すぐ脇の窓の枠に外壁の面が当たる等、11/13）
+    import fix_fittings
+    fix_fittings.fix(prefix + ".jww", prefix + "_meta.json")
     name = prefix.replace("\\", "/").split("/")[-1]
     draw_check(img_path, det, walls, offsets, cols, defaults, prefix + "_壁と柱.png", f"{name}　壁と柱")
     draw_fittings(img_path, det, offsets, placements, skipped, lib, cfg, prefix + "_建具の配置.png",

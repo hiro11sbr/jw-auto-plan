@@ -225,7 +225,7 @@ def ready_part(part):
 
 
 # one file per category, so each stays a size a person can browse (user, 2026-10-22)
-CATEGORY = {"片開き": "室内ドア", "両開き": "室内ドア", "片引戸": "室内ドア", "引違い戸": "室内ドア",
+CATEGORY = {"片開き": "室内ドア", "両開き": "室内ドア", "親子ドア": "室内ドア", "2枚連動片引戸": "室内ドア", "3枚連動片引戸": "室内ドア", "3枚連動片引戸ふかし壁付き": "室内ドア", "2枚両引き戸": "室内ドア", "アウトセット片引戸": "室内ドア", "アウトセット両引き戸": "室内ドア", "片引戸": "室内ドア", "引違い戸": "室内ドア",
             "折戸": "室内ドア", "UBドア": "室内ドア", "引違い窓": "窓", "縦すべり窓": "窓", "FIX窓": "窓", "横すべり窓": "窓", "縦すべり+FIX窓": "窓",
             "玄関片開き": "玄関ドア", "玄関親子": "玄関ドア"}
 
@@ -260,9 +260,9 @@ def main():
 
     # one row per kind, parts left to right between two columns (like 部品.jww);
     # a full row wraps to the next free row
-    row_of = {"片開き": 2, "両開き": 2, "UBドア": 2, "片引戸": 5, "引違い戸": 5, "折戸": 8,
+    row_of = {"片開き": 2, "両開き": 2, "親子ドア": 2, "2枚連動片引戸": 5, "3枚連動片引戸": 5, "3枚連動片引戸ふかし壁付き": 5, "2枚両引き戸": 5, "アウトセット片引戸": 8, "アウトセット両引き戸": 8, "UBドア": 2, "片引戸": 5, "引違い戸": 5, "折戸": 8,
               "引違い窓": 2, "縦すべり窓": 8, "FIX窓": 11, "横すべり窓": 14, "縦すべり+FIX窓": 17, "玄関片開き": 2, "玄関親子": 2}
-    parts = sorted(spec["parts"], key=lambda p: (CATEGORY.get(p["kind"], ""), row_of.get(p["kind"], 20), p["width"]))
+    parts = sorted(spec["parts"], key=lambda p: (CATEGORY.get(p["kind"], "室内ドア" if p["kind"].startswith("アウトセット") else ""), row_of.get(p["kind"], 8 if p["kind"].startswith("アウトセット") else 20), p["width"]))
     sources = {}
     src_csv = parts_dir / "元データ一覧.csv"
     if src_csv.exists():
@@ -274,7 +274,7 @@ def main():
     index = []
     for p in parts:
         word, w = p["kind"], p["width"]
-        cat = CATEGORY.get(word, "その他")
+        cat = CATEGORY.get(word, "室内ドア" if word.startswith("アウトセット") else "その他")
         if cat not in sheets:
             sheets[cat] = new_sheet(cat)
         d, msp = sheets[cat]
@@ -314,7 +314,7 @@ def main():
         name = f'{p["maker"]}_{p["series"]}_{p["kind"]}_W{w}'
         d.add_block(name, ents)
         next_col = next_col_of[cat]
-        row = row_of.get(p["kind"], 20)
+        row = row_of.get(p["kind"], 8 if p["kind"].startswith("アウトセット") else 20)
         while next_col.get(row, 1) + bay / S / grid + 1 > SHEET_COLS:
             row += 3
         col = next_col.get(row, 1)
