@@ -69,6 +69,9 @@ foreach ($fl in "1F", "2F") {
     & $py -3.13 -I "$d\scripts\window_type.py" $img[$fl] "$mid\${fl}_openings.json" $cfg "$mid\${fl}_walls.json"
     & $py -3.13 -I "$d\scripts\entrance_rule.py" "$mid\${fl}_openings.json" "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg $img[$fl]
     & $py -3.13 -I "$d\scripts\interior_type.py" $img[$fl] "$mid\${fl}_openings.json" "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg
+    # 3d. 便器の位置と向き（make_plan が便器の部品を置く。<階>_便器_手直し.json があればそれを使う）
+    #     （今まで run_all に入っていなかった。11/14）
+    & $py -3.13 -I "$d\scripts\toilet_place.py" $img[$fl] "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg "$mid\${fl}_便器.json" | Select-Object -Last 1
     # 4. 区画の確認（確かめ専用）。文字を消した画像を使う。印を付けるだけで、壁・建具の結果も図面も変えない
     & $py -3.13 -I "$d\scripts\regions_check.py" $img[$fl] $clean "$mid\${fl}_walls.json" "$mid\${fl}_openings.json" "$mid\${fl}_部屋名.json" $names $cfg "$mid\$fl"
 }

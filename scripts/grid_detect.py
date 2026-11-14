@@ -892,6 +892,9 @@ def refit_after_completion(lines, crossing, maxrun, new_crossing=None):
             i = j + 1
 
 
+BRIDGE_ONE = True  # 両側の壁にはさまれた1区間のすき間を壁にする（11/14）
+
+
 def complete_dangling(edges, cfg):
     """Run a wall straight through a short gap (sliding door, thin wall, text over the band).
 
@@ -931,7 +934,7 @@ def complete_dangling(edges, cfg):
                     continue
             # an opening (door with no lines in the band) may have zero evidence itself,
             # so the path is judged on its average, and must end on a wall
-            path, cur = [], nxt
+            path, cur, bridged = [], nxt, False
             while len(path) < maxlen:
                 k = (h, ln, cur)
                 if k not in by_key:
@@ -940,12 +943,20 @@ def complete_dangling(edges, cfg):
                 path.append(k)
                 far = cur + 1 if d == 1 else cur
                 if (h, ln, cur + d) in solid or crossing(h, ln, far):
+                    bridged = (h, ln, cur + d) in solid
                     break
                 cur += d
             else:
                 path = None
-            if not path or any(by_key[k].get("stair") for k in path) \
-                    or sum(evidence(by_key[k]) for k in path) / len(path) < weak:
+            if not path or any(by_key[k].get("stair") for k in path):
+                continue
+            # 同じ線の上で、両側の壁にはさまれた1区間（455）のすき間は壁（換気扇の記号が壁の帯に
+            # 重なって白く抜け、トイレの区画が閉じなかった：プラン1・プラン3 の 2F、11/14）
+            # 帯の中に何もない（線の割合 0）のは戸のない開口（食品庫の入口：プラン3・プラン4 の 1F）なので、つながない
+            if BRIDGE_ONE and bridged and len(path) == 1 and evidence(by_key[path[0]]) >= 0.05:
+                filled += path
+                continue
+            if sum(evidence(by_key[k]) for k in path) / len(path) < weak:
                 continue
             # one bare opening (a door, <= 455) is fine; two in a row is open floor, not a wall
             zeros = longest = 0
