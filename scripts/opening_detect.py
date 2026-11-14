@@ -251,6 +251,7 @@ def detect(img, cfg, det):
             pocket = None
             pocket_px = None  # (gap, pocket) in px, for the sliding door size
             pocket_face = None  # image side of the wall centre the leaf runs on (-1 up/left, +1 down/right)
+            outset = False  # アウトセット片引戸（戸袋の側の壁が薄くない）
             one_side = bool(lines) and (min(lines) > 0 or max(lines) < 0)
             spread = (max(lines) - min(lines)) if lines else 0
             if arc >= oc["entrance_arc_min"] and double[0] >= oc["double_leaf_min"] and (
@@ -303,6 +304,25 @@ def detect(img, cfg, det):
                     # centre: the dashed leaf sits on the face, a frame line may sit on the centre)
                     o_star = max((o_ for o_ in ext if ext[o_][k_] >= 0.9 * best_), key=abs)
                     pocket_face = (1 if o_star > 0 else -1) if abs(o_star) >= 1 else None
+                    # アウトセット片引戸：戸袋の側の壁が薄くなっていない（帯の太さが壁のまま）。ふつうの
+                    # 片引戸は戸袋の所で壁の帯が半分ほどに細い（user 11/14、プラン5 2F：15px と 1〜6px）
+                    pk_pos = [q for q in (range(p0 - before + 3, p0 - 3) if pocket == "before" else range(p1 + 4, p1 + after - 2))
+                              if 0 <= q < (img.shape[1] if h else img.shape[0])]
+                    if len(pk_pos) >= 5:
+                        g_, _d, r_ = profiles(img, gray_range, c, pk_pos, h, half)
+                        th = []
+                        for row in (g_ | r_):
+                            if not row[half - 3:half + 4].any():
+                                th.append(0)
+                                continue
+                            k0 = [k for k in range(half - 3, half + 4) if row[k]][0]
+                            lo_, hi_ = k0, k0
+                            while lo_ > 0 and row[lo_ - 1]:
+                                lo_ -= 1
+                            while hi_ < len(row) - 1 and row[hi_ + 1]:
+                                hi_ += 1
+                            th.append(hi_ - lo_ + 1)
+                        outset = float(np.median(th)) * mmpp >= oc.get("outset_min_band_mm", 100)
                     if pocket == "before":
                         p0 = p0 - before
                     else:
@@ -338,7 +358,7 @@ def detect(img, cfg, det):
                 # the UB door and 縦すべり windows (their sash arc). Kept when an arc was found.
                 "hinge_px": int(hinge_p) if hinge_p is not None and arc >= oc["hinge_arc_min"] else None,
                 "swing_side": swing_side if hinge_p is not None and arc >= oc["hinge_arc_min"] else None,
-                "pocket": pocket, "gap_pocket_px": pocket_px, "pocket_face": pocket_face,
+                "pocket": pocket, "gap_pocket_px": pocket_px, "pocket_face": pocket_face, "outset": outset,
             })
     # A fitting never sits on a line with no wall centre (user, 2026-10-22): fittings missed
     # here mean the wall judgement must improve, so storage_fronts() is off by default.

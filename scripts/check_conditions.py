@@ -35,7 +35,7 @@ import spec  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = HERE.parent
-INTERIOR = ("片開き", "片引戸", "引違い戸", "両開き", "折戸")
+INTERIOR = ("片開き", "片引戸", "引違い戸", "両開き", "折戸", "アウトセット片引戸")
 ENTRANCE = ("玄関片開き", "玄関親子")
 STORAGE = ("両開き", "折戸")
 TOL = 0.8  # mm
@@ -180,6 +180,10 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
         x0, x1 = off, off + W
         if word == "片引戸":
             x1 = off + W / 2
+        if word == pf.OUTSET:  # アウトセット：開口（枠の外から外）だけ。戸は壁の表面を走る
+            j = pf.outset_jambs(ents, S)
+            if j:
+                x0, x1 = j
         if word in ENTRANCE:
             x0, x1 = off + 111, off + W - 111
         e_ = 2
@@ -229,7 +233,8 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
         # G 柱（室内建具の両脇）
         if word in INTERIOR:
             along = lambda p: p[0] if pl["horizontal"] else p[1]  # noqa: E731
-            e0, e1 = along(tr(off / S, 0)), along(tr((off + W) / S, 0))
+            g0_, g1_ = (x0, x1) if word == pf.OUTSET else (off, off + W)  # アウトセットは開口の両脇
+            e0, e1 = along(tr(g0_ / S, 0)), along(tr(g1_ / S, 0))
             lo, hi = min(e0, e1), max(e0, e1)
             for t in (math.floor((lo - hc + 0.01) / grid) * grid, math.ceil((hi + hc - 0.01) / grid) * grid):
                 pt = (t, pl["line"]) if pl["horizontal"] else (pl["line"], t)

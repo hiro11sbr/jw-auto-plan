@@ -1,11 +1,15 @@
 ﻿# 判定済みの中間データ（work\中間データ）から、全プランの図面（02_出力）だけを作り直す。
 # 壁・建具の判定はやり直さない（手直しした json をそのまま使う）。直したあと全図面を検査する。
-#   .\scripts\remake_all.ps1
+#   .\scripts\remake_all.ps1 [-Spec <仕様の名前>]
+#   -Spec を付けると、その仕様で作り、検査もその仕様で行う（05_設定\現在の仕様.txt は変えない。
+#   画面（app.py）が現在の仕様を切り替えても、作り直しと検査の仕様がずれないように。11/14）
+param([string]$Spec = "")
 $d = Split-Path $PSScriptRoot -Parent
 $py = "$env:LOCALAPPDATA\Microsoft\WindowsApps\py.exe"
 $env:PYTHONUTF8 = 1
 # 設定は「現在の仕様」（05_設定\現在の仕様.txt）。default.json だと LIXIL の部品になる（11/13 取り違えた）
-$name = (Get-Content "$d\05_設定\現在の仕様.txt" -Encoding UTF8 | Select-Object -First 1).Trim()
+$name = if ($Spec) { $Spec } else { (Get-Content "$d\05_設定\現在の仕様.txt" -Encoding UTF8 | Select-Object -First 1).Trim() }
+$env:JW_SPEC = $name  # 検査（check_conditions.py --all）も同じ仕様で
 $cfg = if ($name) { "$d\05_設定\仕様\$name.json" } else { "$d\05_設定\default.json" }
 "設定: $cfg"
 $plans = @(
