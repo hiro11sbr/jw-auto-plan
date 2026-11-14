@@ -35,6 +35,9 @@ def load_cfg(path):
 
 
 def current_name():
+    import os
+    if os.environ.get("JW_SPEC"):  # 作り直し（remake_all.ps1 -Spec）で決めた仕様を優先（11/14）
+        return os.environ["JW_SPEC"].strip()
     f = SETTINGS / "現在の仕様.txt"
     return f.read_text(encoding="utf-8").strip() if f.exists() else ""
 

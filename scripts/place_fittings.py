@@ -43,11 +43,23 @@ PART_FOR_KIND = {
 PART_FOR_LETTERS = {"H": ("引違い窓",), "T": ("縦すべり窓",), "F": ("FIX窓",), "TF": ("縦すべり窓", "FIX窓"),
                     "Y": ("横すべり窓",), "TY": ("横すべり窓", "FIX窓")}
 WORDS = ("片開き", "片引戸", "引違い戸", "両開き", "折戸", "UBドア", "引違い窓", "縦すべり窓", "FIX窓", "横すべり窓",
-         "縦すべり+FIX窓", "玄関片開き", "玄関親子")
+         "縦すべり+FIX窓", "玄関片開き", "玄関親子", "アウトセット片引戸")
 WINDOWS = {"引違い窓", "縦すべり窓", "FIX窓", "横すべり窓", "縦すべり+FIX窓"}
 OUTWARD = WINDOWS | {"玄関片開き", "玄関親子"}  # exterior toward local +y, reference point outside
 HINGE_RIGHT = {"縦すべり窓", "縦すべり+FIX窓", "UBドア"}  # pivot drawn at the right end (LIXIL 縦すべり; the user's UB door)
-NO_HINGE = {"引違い窓", "FIX窓", "横すべり窓", "片引戸", "引違い戸"}
+NO_HINGE = {"引違い窓", "FIX窓", "横すべり窓", "片引戸", "引違い戸", "アウトセット片引戸"}
+# アウトセット片引戸：壁を削らずに、壁の表面に後から付ける引戸。戸袋の側の壁が薄くならない（user 11/14）。
+# 開口（910の柱間なら W1320、それより広ければ W1580）の両脇に柱が入る
+OUTSET = "アウトセット片引戸"
+
+
+def outset_jambs(entities, S):
+    """アウトセット片引戸の開口の範囲（基準点から、局所 mm）：+y 側に立つ縦の枠（長さ100以上）の外から外"""
+    xs = [e["start_x"] * S for e in entities if e["type"] == "LINE" and abs(e["start_x"] - e["end_x"]) < 1e-6
+          and abs(e["end_y"] - e["start_y"]) * S > 100]
+    return (min(xs), max(xs)) if xs else None
+
+
 SLIDING_WINDOW_MIN_MM = 1500  # user (2026-10-22): 引違い窓 is used only at W1500 and wider
 
 
@@ -159,6 +171,12 @@ def parts_for(o, lib, bay=None, small_door=None):
                 p = q
         return [p] if p else []
     words = PART_FOR_KIND.get(o["kind"], ())
+    if o["kind"] == "sliding_pocket" and o.get("outset"):
+        # 開口の幅で選ぶ（戸袋の長さは部品が持っている）
+        gp = o.get("gap_pocket_px") or [1, 1]
+        gap_mm = o["width_mm"] * gp[0] / max(1, gp[0] + gp[1])
+        p = choose(lib, (OUTSET,), 1320 if gap_mm <= 1000 else 1580)
+        return [p] if p else []
     if o["kind"] == "sliding_pocket":
         # a 片引戸's pocket half runs inside the wall beyond the visible opening: the bay does
         # not limit it; it is placed from the jamb the door starts at (プラン2 1F 脱衣所, 10/25)
@@ -219,7 +237,7 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
             t = mapper.xmm(start_px) if h else mapper.ymm(start_px)
             hinge_low = abs(t - a) <= abs(t - b)
         o_use = o
-        if o["kind"] == "sliding_pocket" and perp_at is not None and hinge_low is not None:
+        if o["kind"] == "sliding_pocket" and not o.get("outset") and perp_at is not None and hinge_low is not None:
             # the frame at the end away from the pocket is over 780 wide: a wall running across that
             # end leaves no room for a W1644, so the narrower part is used (user 10/28: プラン5 2F, プラン3 1F)
             end = ga if hinge_low else gb
@@ -306,11 +324,11 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
             along = flo - off if d == 1 else fhi + off  # the block base (left column centre)
             if word in OUTWARD:
                 sy = s_out if h else -s_out  # rot 90: local +y -> model -X
-            elif word in ("片引戸", "折戸", "両開き") and larger_side:
+            elif word in ("片引戸", OUTSET, "折戸", "両開き") and larger_side:
                 # 折戸 / 両開き of a storage open out of it, toward the room: their handles are
                 # only on the face they open to (user 10/24, プラン5 階段下物入 opened inward)
                 s_big = larger_side(h, line, (a + b) / 2)
-                if word == "片引戸" and o.get("pocket_face") is not None:
+                if word in ("片引戸", OUTSET) and o.get("pocket_face") is not None:
                     # a 片引戸 slides on the face its leaf is drawn on in the input (user 10/29, プラン3):
                     # the block's local -y is that face, so +y faces away from it
                     face = -o["pocket_face"] if h else o["pocket_face"]  # model direction of the face
@@ -341,9 +359,16 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
                 end_gap = abs(fhi - b)
             else:
                 end_gap = min(abs(flo - a), abs(fhi - b))
+            span = (flo, fhi)
+            if word == OUTSET:
+                # 戸は壁の表面を走るので、壁を切るのも柱をよけるのも開口（枠の外から外）だけ
+                j = outset_jambs(_ents, S)
+                if j:
+                    e1, e2 = along + d * j[0], along + d * j[1]
+                    span = (min(e1, e2), max(e1, e2))
             out.append({"block": name, "kind": o["kind"], "word": word, "pos": pos, "rot": 0 if h else 90,
                         "end_gap_mm": round(end_gap),
-                        "sx": d, "sy": sy, "horizontal": h, "line": line, "span": (flo, fhi),
+                        "sx": d, "sy": sy, "horizontal": h, "line": line, "span": span,
                         "width": w, "outward": s_out, "inner_mm": inner,
                         "label": (o.get("label") or {}).get("code"), "hinge_known": hinge_low is not None})
     return out, skipped
