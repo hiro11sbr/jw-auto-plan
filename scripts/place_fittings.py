@@ -173,9 +173,19 @@ def parts_for(o, lib, bay=None, small_door=None):
     words = PART_FOR_KIND.get(o["kind"], ())
     if o["kind"] == "sliding_pocket" and o.get("outset"):
         # 開口の幅で選ぶ（戸袋の長さは部品が持っている）
+        # 枠の外から外を、開口の柱間の石膏ボード面から石膏ボード面（柱間−65×2）に入る一番大きいもの
+        # （910の柱間なら W1580：枠の外 780 ≦ 780。user 11/14）
         gp = o.get("gap_pocket_px") or [1, 1]
         gap_mm = o["width_mm"] * gp[0] / max(1, gp[0] + gp[1])
-        p = choose(lib, (OUTSET,), 1320 if gap_mm <= 1000 else 1580)
+        obay = math.ceil((gap_mm + COLUMN) / GRID - 0.05) * GRID
+        fit = []
+        for v in lib.values():
+            if v[3] != OUTSET:
+                continue
+            j = outset_jambs(v[1], v[4] / v[2])
+            if j and j[1] - j[0] <= obay - 2 * DOOR_EDGE + 1:
+                fit.append(v)
+        p = max(fit, key=lambda v: v[4]) if fit else choose(lib, (OUTSET,), 1320)
         return [p] if p else []
     if o["kind"] == "sliding_pocket":
         # a 片引戸's pocket half runs inside the wall beyond the visible opening: the bay does
@@ -364,6 +374,10 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
                 # 戸は壁の表面を走るので、壁を切るのも柱をよけるのも開口（枠の外から外）だけ
                 j = outset_jambs(_ents, S)
                 if j:
+                    # 枠の外を石膏ボード面（柱芯から65）に合わせる。パナソニックの部品は基準点が65ずれていて、
+                    # 枠の外が柱芯から130だった（user 11/14）
+                    along += d * (DOOR_EDGE - j[0])
+                    pos = (along, across) if h else (across, along)
                     e1, e2 = along + d * j[0], along + d * j[1]
                     span = (min(e1, e2), max(e1, e2))
             out.append({"block": name, "kind": o["kind"], "word": word, "pos": pos, "rot": 0 if h else 90,
