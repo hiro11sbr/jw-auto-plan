@@ -55,6 +55,38 @@ def read_columns(plan_jww, meta_json, size=105):
     return [(round(x * sc + cx, 1), round(y * sc + cy, 1)) for (x, y), n in seen.items() if n >= 2]
 
 
+def grid_labels(vals, unit=910):
+    """通り芯の番号：先頭を1とし、unit（910）ごとに1ずつ。unit に満たない（半分の）通り芯は .5。
+    次の910に布がなければ番号は飛ばす。全体が unit の整数倍でなく端が455で終わる時は、左から数えた最後の通り芯 a と、
+    右から数えた最初の通り芯 b が455はなれている所（継ぎ目、真ん中に近い所）を探し、その455を番号1つ分にする。
+    見つからなければ警告を出し、左から数える。"""
+    first, last = vals[0], vals[-1]
+    half = unit / 2
+    seam = None
+    if (last - first) % unit > 1:
+        best = None
+        for a, b in zip(vals, vals[1:]):
+            if abs((a - first) % unit) < 1 and abs((last - b) % unit) < 1 and abs((b - a) % unit - half) < 1:
+                d = abs((a + b) / 2 - (first + last) / 2)
+                if best is None or d < best[0]:
+                    best = (d, a, b)
+        if best:
+            seam = best[1:]
+        else:
+            print("警告：全体の寸法が910の倍数でなく、455を詰められる継ぎ目の通り芯が見つかりません（左から数えます）")
+    out = []
+    for v in vals:
+        if seam and v >= seam[1] - 1:
+            n0, ref, na = (seam[0] - first) // unit + 2, seam[1], v - seam[1]
+        else:
+            n0, ref, na = 1, first, v - first
+        k = int(na // unit + 1e-6)
+        rem = na - k * unit
+        n = n0 + k
+        out.append(f"{n}" if rem < 1 else f"{n}.5")
+    return out
+
+
 def anchor_points(walls, ac, cols=()):
     """アンカーの位置（案）：各布の芯の上に、両端から end_mm の所、間が max_spacing_mm を超えたら等間隔に足す。
     短い布（長さ short_mm 以下）は真ん中に1本。柱（平面詳細図）の中心から col_clear_mm 以内は避け、布に沿って
@@ -213,43 +245,33 @@ def main():
             else:
                 text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
 
-    def halves(vals):
-        """真ん中（最初と最後の真ん中）で2つに分ける。真ん中をまたぐ区間は、中点が小さい側に入る。両側に共有の線を持たせる"""
-        mid = (vals[0] + vals[-1]) / 2
-        k = max(i for i, v in enumerate(vals) if i == 0 or (vals[i - 1] + v) / 2 <= mid)
-        return vals[:k + 1], vals[k:]
-
-    gxl, gxr = halves(gx)
-    gyl, gyr = halves(gy)  # gy は小さい（下）側が前半
-    dim_chain(gxl, "bottom")
-    dim_chain(gxr, "top")
-    dim_chain(gyl, "left")
-    dim_chain(gyr, "right")
-    dim_chain([gx[0], gx[-1]], "bottom", whole=True, lvl=1)
+    # 寸法線：X方向は上、Y方向は左（原則。user 11/15）。1段目は通り芯どうしの区間（合計が全体の寸法と合う。途中でやめない）、
+    # 2段目は全体の寸法。
+    dim_chain(gx, "top")
+    dim_chain([gx[0], gx[-1]], "top", whole=True, lvl=1)
+    dim_chain(gy, "left")
     dim_chain([gy[0], gy[-1]], "left", whole=True, lvl=1)
 
-    # 通り芯の記号（上と右。寸法線の外側）
-    def spaced(vals):
-        """記号が重ならないように、前の記号から記号の直径以上はなれた通り芯だけに付ける"""
-        out, last = [], None
-        for v in vals:
-            if last is None or v - last >= 2 * r + 60:
-                out.append(v)
-                last = v
-        return out
+    # 通り芯の記号：910ごとに番号を振る（910に満たない所は .5）。次の910に布がなければ番号を飛ばす。
+    labels_x = grid_labels(gx, fc["dim"].get("unit_mm", 910))
+    labels_y = grid_labels(gy, fc["dim"].get("unit_mm", 910))
+    ts = fc["dim"].get("bubble_text_mm", 1.5)
 
-    yt = base["top"] + 700 + r
+    def bubble(label, cx_, cy_):
+        msp.add_circle(P(cx_, cy_), r / S, jwwattribs={"layer": lay["dim"]["layer"], "pen_color": lay["dim"]["color"], "pen_style": 1})
+        w = len(label) * ts * 0.9 * S
+        text(label, cx_ - w / 2, cy_ - 70, "dim", size=ts, length=w)
+
+    yt = base["top"] + 600 + 700 + r
     xr = base["right"] + 700 + r
-    for i, t in enumerate(spaced(gx), 1):
-        line((t, base["top"] + 250), (t, yt - r), "center")
-        msp.add_circle(P(t, yt), r / S, jwwattribs={"layer": lay["dim"]["layer"], "pen_color": lay["dim"]["color"], "pen_style": 1})
-        text(f"X{i}", t - r * 0.62, yt - 80, "dim", size=1.8)
-    for i, t in enumerate(spaced(gy), 1):
-        line((base["right"] + 250, t), (xr - r, t), "center")
-        msp.add_circle(P(xr, t), r / S, jwwattribs={"layer": lay["dim"]["layer"], "pen_color": lay["dim"]["color"], "pen_style": 1})
-        text(f"Y{i}", xr - r * 0.62, t - 80, "dim", size=1.8)
+    for v, lb in zip(gx, labels_x):
+        line((v, base["top"] + 600 + 250), (v, yt - r), "center")
+        bubble("X" + lb, v, yt)
+    for v, lb in zip(gy, labels_y):
+        line((base["right"] + 250, v), (xr - r, v), "center")
+        bubble("Y" + lb, xr, v)
     # 表題と、基礎の寸法（仮）
-    ty = base["bottom"] - 600 - 560
+    ty = min(ys) - B / 2 - 900 - 560
     text("基礎伏図（布基礎）　縮尺 1/50　※寸法はすべて仮", min(xs), ty, "dim", size=3.5, length=14000)
     note = (f"立上り幅{A}／底盤幅{B}／底盤厚{fc['teiban_thickness']}／"
             f"立上り高{fc['tachiagari_height']}（GL上）／根入れ{fc['neire']}（GL下）")

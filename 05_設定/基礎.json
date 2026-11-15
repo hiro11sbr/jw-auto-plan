@@ -32,7 +32,9 @@
     "offset_mm": 900,
     "text_size_mm": 2.2,
     "min_text_mm": 100,
-    "bubble_radius_mm": 250
+    "bubble_radius_mm": 225,
+    "bubble_text_mm": 1.5,
+    "unit_mm": 910
   },
   "anchor": {
     "_comment": "アンカーボルトの置き方（案。ユーザー確認待ち 11/15）。別レイヤに描く",
