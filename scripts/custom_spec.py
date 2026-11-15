@@ -79,9 +79,14 @@ def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, p
     vals = {"ext": ext, "air": air, "ins": ins, "osb": osb, "col": col, "pb": pb}
     for k, v in vals.items():
         v = float(v)
-        if not (0 <= v <= 400) or (k == "col" and v < 60):
+        if not (0 <= v <= 400):
             raise ValueError(f"{k} の値がおかしい: {v}")
         vals[k] = v
+    # 柱は105に固定、室内の石膏ボードは「なし（0）」か「12.5」だけ（厚くすると建具の枠などに障害が出る。user 11/15）
+    if abs(vals["col"] - 105.0) > 0.01:
+        raise ValueError(f"柱は105だけです（入力 {vals['col']:g}）")
+    if not any(abs(vals["pb"] - x) < 0.01 for x in (0.0, 12.5)):
+        raise ValueError(f"石膏ボードは なし（0）か 12.5 だけです（入力 {vals['pb']:g}）")
     off = faces(**vals)
     spec_dir = SETTINGS / "仕様"
     old = spec_dir / f"{name}.json"
@@ -113,7 +118,7 @@ def _attr(color=1, style=1):
     return {"group": 0, "pen_style": style, "pen_color": color, "pen_width": 0, "layer": 3, "layer_group": 0, "flag": 0}
 
 
-def _shape(word, W, off, added):
+def _shape(word, W, off, added, board=65.0):
     """局所の mm（x＝左の柱芯から壁に沿って、y＝壁芯から。+y が外／扉の開く側）で線と円弧を返す。"""
     L, A = [], []
     line = lambda a, b: L.append((a, b))  # noqa: E731
@@ -160,8 +165,8 @@ def _shape(word, W, off, added):
             line((j0, b), (j0, b + r1)); A.append(((j0, b), r1, 0.0, 90.0))
             line((j1, b), (j1, b + r2)); A.append(((j1, b), r2, 90.0, 90.0))
         return L, A
-    h = 77.5  # 建具枠155
-    lo = -65.0 if word in ("折戸", "両開き") else -h  # 収納建具は開かない側をボード面にそろえる
+    h = board + 12.5  # 建具枠：ボード面から12.5ずつ出す（ボード12.5なら155）
+    lo = -board if word in ("折戸", "両開き") else -h  # 収納建具は開かない側をボード面にそろえる
     if word == "片開き":
         rect(x0, lo, x0 + 30, h); rect(x1 - 30, lo, x1, h)
         r = W - 60
@@ -217,7 +222,7 @@ def build_generic(out_dir, off, col_mm=105.0):
         x = -180.0
         for W in widths:
             o = std_offset(word, W)
-            lines, arcs = _shape(word, W, o, added)
+            lines, arcs = _shape(word, W, o, added, off["board_face_inside"])
             ents = [{"type": "LINE", "base": _attr(), "start_x": a[0] / S, "start_y": a[1] / S,
                      "end_x": b[0] / S, "end_y": b[1] / S} for a, b in lines]
             ents += [{"type": "ARC", "base": _attr(), "center_x": c[0] / S, "center_y": c[1] / S, "radius": r / S,

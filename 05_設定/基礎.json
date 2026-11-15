@@ -1,0 +1,16 @@
+{
+  "_comment": "基礎伏図の設定（寸法 mm）。全部ユーザーの仮の値（11/15）。scripts/make_foundation.py が読む",
+  "kind": "布基礎",
+  "tachiagari_width": 150,
+  "teiban_width": 600,
+  "teiban_thickness": 150,
+  "tachiagari_height": 450,
+  "neire": 600,
+  "layers": {
+    "tachiagari": {"layer": 3, "color": 1, "style": 1},
+    "teiban": {"layer": 5, "color": 2, "style": 4},
+    "center": {"layer": 4, "color": 3, "style": 5},
+    "dim": {"layer": 10, "color": 2, "style": 1}
+  },
+  "dim": {"offset_mm": 900, "text_size_mm": 2.2, "min_text_mm": 500, "bubble_radius_mm": 250}
+}
