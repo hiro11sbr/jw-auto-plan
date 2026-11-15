@@ -1535,6 +1535,30 @@ def opening_centre_lines(placements, lib, S, half=200.0):
         if word == "アウトセット片引戸":
             jj = outset_jambs(ents, S)
             xc = (jj[0] + jj[1]) / 2 if jj else x0 + W / 2
+        elif "縦すべり" in word and "FIX" in word:
+            # 縦すべり+FIX：出入りできるのは縦すべりの障子の側だけ。開いた障子の線（枠の見込みから
+            # 50以上はみ出す線）がある側の、枠の内側から方立の面までの真ん中（user 11/15）
+            p40 = [((e["start_x"] + e["end_x"]) * S / 2) for e in ents if e["type"] == "LINE"
+                   and abs(e["start_x"] - e["end_x"]) * S < 0.5 and abs(e["start_y"] - e["end_y"]) * S >= 40]
+            perp = [(x, 0, 0, 0) for x in p40]  # 方立・枠の内側を探すため、短い縦の線（40以上）も見る
+            mull = [t[0] for t in perp if x0 + 0.25 * W <= t[0] <= x0 + 0.75 * W]
+            half_d = (jamb and (j[2] - j[1]) / 2) or 65.0
+            sash = []
+            for e in ents:
+                if e["type"] == "LINE":
+                    for ex, ey in ((e["start_x"], e["start_y"]), (e["end_x"], e["end_y"])):
+                        if abs(ey * S - yc) > half_d + 50:
+                            sash.append((e["start_x"] + e["end_x"]) * S / 2)
+            if mull and sash:
+                mid = (min(mull) + max(mull)) / 2
+                if sum(sash) / len(sash) < mid:
+                    ins = [t[0] for t in perp if x0 <= t[0] <= x0 + 80]
+                    xc = ((max(ins) if ins else x0) + min(mull)) / 2
+                else:
+                    ins = [t[0] for t in perp if x1 - 80 <= t[0] <= x1]
+                    xc = (max(mull) + (min(ins) if ins else x1)) / 2
+            else:
+                xc = x0 + W / 2
         elif word == "片引戸":
             mull = [t[0] for t in perp if x0 + 0.3 * W <= t[0] <= x0 + 0.7 * W]
             inner = [t[0] for t in perp if x0 <= t[0] <= x0 + 40]
