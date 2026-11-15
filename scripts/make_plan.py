@@ -1494,11 +1494,13 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
     d.saveas(path)
 
 
-def walk_in_window(code):
-    """出入りできる窓か：窓の記号（例 06020T・16020H）の種類が縦すべり系（T を含む）か引違い（H）で、高さ 1800 以上（user 11/15）"""
-    if not code or len(code) < 6 or not code[:5].isdigit():
-        return False
-    return ("T" in code[5:] or "H" in code[5:]) and int(code[3:5]) >= 18
+def walk_in_window(code, word=None):
+    """出入りできる窓か：窓の記号（例 06020T・16020H）の種類が縦すべり系（T を含む）か引違い（H）で、高さ 1800 以上（user 11/15）。
+    高さは記号の4・5桁目（16020 の「20」＝2000）。18 以上なら 1800 以上。
+    記号が読めず高さが分からない時は、縦すべり系・引違いの窓なら引く（迷ったら引く、user 11/16）"""
+    if code and len(code) >= 6 and code[:5].isdigit():
+        return ("T" in code[5:] or "H" in code[5:]) and int(code[3:5]) >= 18
+    return bool(word) and ("縦すべり" in word or word == "引違い窓")
 
 
 def opening_centre_lines(placements, lib, S, half=200.0):
@@ -1512,7 +1514,7 @@ def opening_centre_lines(placements, lib, S, half=200.0):
     out = []
     for pl in placements:
         is_win = pl["kind"] == "window" if pl.get("kind") else pl["word"] in pf_WINDOWS
-        if is_win and not walk_in_window(pl.get("label")):
+        if is_win and not walk_in_window(pl.get("label"), pl.get("word")):
             continue
         en = entry.get(pl["block"])
         if en is None:
