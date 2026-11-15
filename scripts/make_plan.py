@@ -1199,8 +1199,14 @@ def shift_entrance_doors(placements, walls, cfg, runs=()):
         stor = list(FURN) + [(r["horizontal"], r["c_mm"], r["a_mm"], r["b_mm"]) for r in runs]
         storage = any(fh != h and abs(c - hinge_end) <= 500 and min(fa, fb) - 600 <= line <= max(fa, fb) + 600
                       for fh, c, fa, fb in stor)
-        d = -hinge_dir if storage else hinge_dir
+        d = -hhinge_dir if False else (-hinge_dir if storage else hinge_dir)
         move = d * sh
+        # 壁の端の柱の面（壁端から65）に枠が食い込まないように、ずらす量を抑える
+        # （W1126 を200ずらすと右の壁に食い込んだ：プラン1 1F、user 11/15）
+        edge = cfg["column"]["size_mm"] / 2 + 12.5
+        room = (w.b - edge - hi) if d > 0 else (lo - (w.a + edge))
+        if room < sh:
+            move = d * max(0.0, room)
         x, y = pl["pos"]
         pl["pos"] = (x + move, y) if h else (x, y + move)
         pl["span"] = (lo + move, hi + move)
