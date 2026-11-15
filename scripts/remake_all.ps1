@@ -29,6 +29,12 @@ foreach ($p in $plans) {
     $fls = @("1F", "2F"); $imgs = @($p.i1, $p.i2)
     if ($p.i3) { $fls += "3F"; $imgs += $p.i3 }
     foreach ($fl in "1F", "2F", "3F") { Remove-Item "$t\$fl.jww" -ErrorAction SilentlyContinue }
+    # ユニットバスの読み取り（<階>_UB.json）がまだなければ作る（11/16 より前に判定したプラン）
+    for ($k = 0; $k -lt $fls.Count; $k++) {
+        if (-not (Test-Path "$mid\$($fls[$k])_UB.json")) {
+            & $py -3.13 -I "$d\scripts\ub_detect.py" "$img\$($imgs[$k])" "$mid\$($fls[$k])" $cfg | Select-Object -Last 1
+        }
+    }
     for ($k = 0; $k -lt $fls.Count; $k++) {
         $f = $fls[$k]
         if ($k + 1 -lt $fls.Count) {

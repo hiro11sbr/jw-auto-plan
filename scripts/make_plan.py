@@ -1359,7 +1359,109 @@ def place_columns(walls, nodes, cfg, upper_walls, fittings=(), fp=None, mullions
 
 
 # ---------------------------------------------------------------- output
-def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, extras=(), toilets=()):
+def _generic_ub(kind):
+    """UB の部品がない時（配布用）の簡単な形：外形・内側・浴槽・ドアの枠（用紙mm、1/50）。
+    向きは部品集と同じ（浴槽が左の壁。beside はドアが下の壁の右寄り、facing は右の壁の下寄り）"""
+    S = 50.0
+    def rect(x0, y0, x1, y1):
+        return [{"type": "LINE", "start_x": a / S, "start_y": b / S, "end_x": c / S, "end_y": d / S,
+                 "base": {"pen_color": 1, "pen_style": 1}}
+                for a, b, c, d in ((x0, y0, x1, y0), (x1, y0, x1, y1), (x1, y1, x0, y1), (x0, y1, x0, y0))]
+    if kind == "beside":
+        es = rect(32, 47, 1668, 1683) + rect(50, 65, 1650, 1665) + rect(90, 120, 780, 1610) + rect(900, 0, 1640, 47)
+    else:
+        es = rect(32, 17, 1668, 1653) + rect(50, 35, 1650, 1635) + rect(90, 90, 780, 1580) + rect(1668, 45, 1715, 790)
+    return es
+
+
+def ub_layout(ub_path, cfg):
+    """読み取った UB（<階>_UB.json）に、UB の部品を置く（user 11/16）。部品の外形の中心を UB の壁芯の
+    真ん中に置き、浴槽の壁・ドアの壁・ドアの寄りが合うように回す／裏返す。
+    返す：(置き方のリスト [{block, ents, pos, rot, sx, sy}], ドアの開口 [{horizontal, line, span, word}])"""
+    if not Path(ub_path).exists():
+        return [], []
+    ubs = json.load(open(ub_path, encoding="utf-8"))
+    if not ubs:
+        return [], []
+    up = cfg.get("ub_part", {})
+    S = cfg["layers"]["scale"]
+    blocks = {}
+    lib_p = Path(__file__).resolve().parent.parent / up.get("library", "").replace("\\", "/") if up.get("library") else None
+    if lib_p and lib_p.is_file():
+        blocks = {b["name"]: b["entities"] for b in ezjww.read_document(str(lib_p))["block_defs"]}
+    canon = {"beside": {"tub": [-1, 0], "door": [0, -1], "door_end": [1, 0]},
+             "facing": {"tub": [-1, 0], "door": [1, 0], "door_end": [0, -1]}}
+    out, cuts = [], []
+    for u in ubs:
+        door = u.get("door")
+        kind = "facing" if door and door[0] == -u["tub"][0] and door[1] == -u["tub"][1] else "beside"
+        spec_ = {**canon[kind], **up.get(kind, {})}
+        name = spec_.get("block")
+        ents = blocks.get(name) if name else None
+        if ents is None:
+            name, ents = f"UB_{kind}", _generic_ub(kind)
+        # 部品の外形（1000mm 以上の線の範囲）と、その中心
+        long_ = [e for e in ents if e["type"] == "LINE"
+                 and math.hypot(e["end_x"] - e["start_x"], e["end_y"] - e["start_y"]) * S >= 1000]
+        xs = [v * S for e in long_ for v in (e["start_x"], e["end_x"])]
+        ys = [v * S for e in long_ for v in (e["start_y"], e["end_y"])]
+        bx0, bx1, by0, by1 = min(xs), max(xs), min(ys), max(ys)
+        cl = ((bx0 + bx1) / 2, (by0 + by1) / 2)
+        best = None
+        for rot in (0, 90, 180, 270):
+            for sx in (1, -1):
+                a = math.radians(rot)
+                f = lambda v, a=a, sx=sx: (round(v[0] * sx * math.cos(a) - v[1] * math.sin(a)),  # noqa: E731
+                                           round(v[0] * sx * math.sin(a) + v[1] * math.cos(a)))
+                ok = f(spec_["tub"]) == tuple(u["tub"])
+                if door:
+                    ok = ok and f(spec_["door"]) == tuple(door) and f(spec_["door_end"]) == tuple(u["door_end"])
+                if ok and best is None:
+                    best = (rot, sx, f)
+        if best is None:
+            print(f"UB @{u['center_mm']}：部品の向きが合わない（浴槽{u['tub']} ドア{door}）。置かない")
+            continue
+        rot, sx, f = best
+        a = math.radians(rot)
+
+        def tp(x, y, a=a, sx=sx):
+            return (x * sx * math.cos(a) - y * math.sin(a), x * sx * math.sin(a) + y * math.cos(a))
+        c_ = tp(*cl)
+        pos = (u["center_mm"][0] - c_[0], u["center_mm"][1] - c_[1])
+        out.append({"block": name, "ents": ents, "pos": pos, "rot": rot, "sx": sx, "sy": 1, "kind": kind})
+        print(f"UB の部品: {name} 中心{tuple(u['center_mm'])} 回転{rot} 裏返し{'あり' if sx < 0 else 'なし'}")
+        if not door:
+            continue
+        # ドアの開口：部品の、ドアの側で外形の外に出ている線（ドアの枠）の範囲。壁はそこで切る
+        dl = spec_["door"]
+        outside = []
+        for e in ents:
+            if e["type"] != "LINE":
+                continue
+            pts = [(e["start_x"] * S, e["start_y"] * S), (e["end_x"] * S, e["end_y"] * S)]
+            # （外形の角の印＝かぎの線は外す：外形の端から 10 以内）
+            if all(((x - bx1 > 1) if dl[0] > 0 else (bx0 - x > 1) if dl[0] < 0 else (y - by1 > 1) if dl[1] > 0 else (by0 - y > 1))
+                   and ((by0 + 10 < y < by1 - 10) if dl[0] else (bx0 + 10 < x < bx1 - 10)) for x, y in pts):
+                outside += pts
+        h = bool(u["door_horizontal"])
+        if outside:
+            ws = [tp(x, y) for x, y in outside]
+            ts = [(pos[0] + p[0]) if h else (pos[1] + p[1]) for p in ws]
+            span = (min(ts), max(ts))
+        else:
+            span = tuple(u["door_span_mm"])
+        if u.get("door_line_mm") is None:
+            continue
+        cuts.append({"horizontal": h, "line": u["door_line_mm"], "span": span, "word": "UB開口", "block": None,
+                     "sx": 1, "sy": 1, "outward": 0})
+        # 開口部の中心線（室内の建具は全部、ドア芯から200ずつ、user 11/15）
+        m_, L_ = (span[0] + span[1]) / 2, u["door_line_mm"]
+        out[-1]["centre"] = (((m_, L_ - 200), (m_, L_ + 200)) if h else ((L_ - 200, m_), (L_ + 200, m_)))
+        print(f"UB のドアの開口: {'横' if h else '縦'} 線{u['door_line_mm']:g} {span[0]:.1f}〜{span[1]:.1f}")
+    return out, cuts
+
+
+def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, extras=(), toilets=(), ubs=()):
     S = cfg["layers"]["scale"]
     L = cfg["layers"]
     d = ezjww.new(paper_size=3)
@@ -1476,6 +1578,50 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
                     msp.add_arc(T(*e["c"]), e["r"] / S, st, round(math.degrees(e["sw"]), 4) % 360.0 or 360.0, jwwattribs=at_)
                 else:
                     msp.add_circle(T(*e["c"]), e["r"] / S, jwwattribs=at_)
+    # UB（ユニットバス）：読み取った向きに部品を置く（家具・設備のレイヤー、user 11/16）
+    if ubs:
+        fd_ = cfg["furniture_draw"]
+        for ub in ubs:
+            if ub.get("centre"):
+                (p, q) = ub["centre"]
+                msp.add_line(((p[0] - cx) / S, (p[1] - cy) / S), ((q[0] - cx) / S, (q[1] - cy) / S),
+                             jwwattribs={"layer": fd_["layer"], "pen_color": fd_["color"], "pen_style": 1})
+            ang = math.radians(ub["rot"])
+            ca, sa = math.cos(ang), math.sin(ang)
+            sx, sy = ub["sx"], ub["sy"]
+
+            def tu(u, v, ub=ub, ca=ca, sa=sa, sx=sx, sy=sy):
+                u, v = u * S * sx, v * S * sy
+                return ((ub["pos"][0] + u * ca - v * sa - cx) / S, (ub["pos"][1] + u * sa + v * ca - cy) / S)
+            for e in ub["ents"]:
+                at = {"layer": fd_["layer"], "pen_color": fd_["color"], "pen_style": e["base"].get("pen_style", 1)}
+                if e["type"] == "LINE":
+                    msp.add_line(tu(e["start_x"], e["start_y"]), tu(e["end_x"], e["end_y"]), jwwattribs=at)
+                elif e["type"] == "CIRCLE":
+                    msp.add_circle(tu(e["center_x"], e["center_y"]), e["radius"], jwwattribs=at)
+                elif e["type"] == "ARC":
+                    a0, sw = e["start_angle"], e["arc_angle"]
+                    fl_ = e.get("flatness", 1.0) or 1.0
+                    if abs(fl_ - 1.0) > 1e-6:  # 楕円の弧：点を結んだ線で描く
+                        tl = e.get("tilt_angle", 0.0) or 0.0
+                        n = max(8, int(abs(sw) * 20))
+                        pts = []
+                        for j in range(n + 1):
+                            t = a0 + sw * j / n
+                            ux, uy = e["radius"] * math.cos(t), e["radius"] * fl_ * math.sin(t)
+                            pts.append(tu(e["center_x"] + ux * math.cos(tl) - uy * math.sin(tl),
+                                          e["center_y"] + ux * math.sin(tl) + uy * math.cos(tl)))
+                        for p, q in zip(pts, pts[1:]):
+                            msp.add_line(p, q, jwwattribs=at)
+                        continue
+                    mv = lambda a, sx=sx, sy=sy, ang=ang: math.atan2(sy * math.sin(a), sx * math.cos(a)) + ang  # noqa: E731
+                    n0, n1 = mv(a0), mv(a0 + sw)
+                    if sx * sy < 0:
+                        n0, n1 = n1, n0
+                    st = round(math.degrees(n0), 4) % 360.0
+                    st = 0.0 if st >= 359.9999 else st
+                    swd = round(math.degrees(n1 - n0), 4) % 360.0 or 360.0
+                    msp.add_arc(tu(e["center_x"], e["center_y"]), e["radius"], st, swd, jwwattribs=at)
     # print alignment marks (paper mm)
     pm = cfg["print_marks_mm"]
 
@@ -2442,6 +2588,7 @@ def main():
     # fittings from the parts library, placed at the detected openings (before the columns:
     # a column never overlaps a fitting)
     placements, skipped, lib, extras = [], [], {}, []
+    ubs, ub_cuts = [], []
     ops_path = walls_path.replace("_walls.json", "_openings.json")
     root = Path(__file__).resolve().parent.parent
     libs_ = cfg["placement"]["library"]
@@ -2670,6 +2817,10 @@ def main():
                 ts = [t for (a_, b_) in block_lines_mm(ents_, pl, cfg["layers"]["scale"]) for t in ((a_[0], b_[0]) if h_ else (a_[1], b_[1]))]
                 print("WINDBG", pl["block"], "span", [round(v, 1) for v in pl["span"]], "extent", round(min(ts), 1), round(max(ts), 1), "line", pl["line"])
         offsets = cut_openings(offsets, placements, cfg, lib=lib)
+        # UB のドアの所は壁を切る（UB の部品のドアの枠の幅、user 11/16）
+        ubs, ub_cuts = ub_layout(walls_path.replace("_walls.json", "_UB.json"), cfg)
+        if ub_cuts:
+            offsets = cut_openings(offsets, ub_cuts, cfg)
         offsets, casing = entrance_casing(offsets, placements, cfg, lib=lib)
         extras = window_extras(placements, cfg, spaces, lib=lib) + casing
         names_path = walls_path.replace("_walls.json", "_部屋名.json")
@@ -2703,6 +2854,7 @@ def main():
                            cl["layer"], cl["color"], cl["style"]))
             print(f"通り芯（{t.get('label', '上がり框')}）: {'横' if t['horizontal'] else '縦'} {c} {a}〜{b}")
     fits =[(pl["horizontal"], pl["line"], *pl["span"], pl["word"]) for pl in placements] + shutters
+    fits += [(c["horizontal"], c["line"], *c["span"], c["word"]) for c in ub_cuts]
     # 片引戸の開口側の半分（中方立まで＋150）：直交する壁の柱はここに置かない（中方立の付近に柱は置けない。
     # 戸袋側の半分には置ける：プラン1 1F の正解図 (3640,7735)。user 11/13）
     mullions = []
@@ -2723,11 +2875,13 @@ def main():
     extras = dot_under_boxes(extras, cfg)
     toilet_path = walls_path.replace("_walls.json", "_便器.json")
     toilets = json.load(open(toilet_path, encoding="utf-8")) if Path(toilet_path).exists() else []
-    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets)
+    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets, ubs)
     # model mm = paper mm * scale + center; score_walls.py needs this to read corrected drawings back
     json.dump({"center_mm": center, "scale": cfg["layers"]["scale"],
                "placements": [{**{k: pl[k] for k in ("block", "word", "kind", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}, "label": pl.get("label")}
-                              for pl in placements]},  # 建具の置き方（部品の差し替え用）
+                              for pl in placements],  # 建具の置き方（部品の差し替え用）
+               "ub": [{k: u[k] for k in ("block", "kind", "pos", "rot", "sx", "sy")} for u in ubs],
+               "ub_openings": [{k: c[k] for k in ("horizontal", "line", "span")} for c in ub_cuts]},
               open(prefix + "_meta.json", "w", encoding="utf-8"))
     # 建具の枠に入り込んだ紫線・壁の線を切る（検査 C・D と同じ箱で。入隅すぐ脇の窓の枠に外壁の面が当たる等、11/13）
     import fix_fittings
