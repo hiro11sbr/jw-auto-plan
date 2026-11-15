@@ -2535,7 +2535,8 @@ def main():
     if Path(kos_path).exists() or extra_kos:
         voids = []
         npath = walls_path.replace("_walls.json", "_部屋名.json")
-        if upper_path is None and Path(npath).exists():  # (2F: on 1F 「上部吹抜」 is the floor above)
+        # (1階の「上部吹抜」は上の階のこと。2階以上は自分の階の吹抜。3階建てでは2階にも上の階がある：11/15)
+        if not Path(walls_path).name.startswith("1F") and Path(npath).exists():
             from opening_detect import Mapper
             Mv = Mapper(det, cfg["input"]["grid_mm"])
             voids = [(Mv.xmm(n["x"]), Mv.ymm(n["y"])) for n in json.load(open(npath, encoding="utf-8"))

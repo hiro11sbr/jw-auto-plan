@@ -11,7 +11,8 @@ param(
     [string]$Pdf = "01_入力\plan_20261012.pdf",
     [string]$Name = "",
     [string]$Img1F = "p2_x31_1504x1504.png",
-    [string]$Img2F = "p3_x51_1504x1289.png"
+    [string]$Img2F = "p3_x51_1504x1289.png",
+    [string]$Img3F = ""   # 3階建ての時だけ、3階の図の画像名（例 p4_x50_1504x1289.png）。1F・2F・3F の順に処理する（11/15）
 )
 $d = $PSScriptRoot
 $py = "$env:LOCALAPPDATA\Microsoft\WindowsApps\py.exe"
@@ -37,9 +38,11 @@ if ($LASTEXITCODE -ne 0) {
 
 & $py -3.13 -I "$d\scripts\extract_plans.py" "$d\$Pdf" $img_dir
 $img = @{ "1F" = "$img_dir\$Img1F"; "2F" = "$img_dir\$Img2F" }
+$floors = @("1F", "2F")
+if ($Img3F) { $img["3F"] = "$img_dir\$Img3F"; $floors += "3F" }
 
 $names = "$d\05_設定\部屋名リスト.csv"
-foreach ($fl in "1F", "2F") {
+foreach ($fl in $floors) {
     # 0. 部屋名の読み取り（文字を消す前に。Windows 標準の日本語OCR＋部屋名リストで照合）
     & $py -3.13 -I "$d\scripts\read_room_names.py" $img[$fl] $cfg $names "$mid\$fl" | Select-Object -First 1
     # 1. 文字の検出と削除（赤字・黒字を消して、きれいな画像を作る）
@@ -77,11 +80,18 @@ foreach ($fl in "1F", "2F") {
 }
 
 # 4. 壁のオフセット・柱・jww（確認画像は元の図面に重ねる。1F は上階の壁を柱位置の判断に使う）
-Remove-Item "$t\1F.jww", "$t\2F.jww" -ErrorAction SilentlyContinue  # 前の回の図を間違って写さない
-& $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\1F_walls.json" $img["1F"] "$t\1F" "$mid\2F_walls.json"
-& $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\2F_walls.json" $img["2F"] "$t\2F"
+foreach ($fl in "1F", "2F", "3F") { Remove-Item "$t\$fl.jww" -ErrorAction SilentlyContinue }  # 前の回の図を間違って写さない
+# 各階は、すぐ上の階の壁を柱位置の判断に使う（最上階は上なし）
+for ($i = 0; $i -lt $floors.Count; $i++) {
+    $fl = $floors[$i]
+    if ($i + 1 -lt $floors.Count) {
+        & $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\${fl}_walls.json" $img[$fl] "$t\$fl" "$mid\$($floors[$i + 1])_walls.json"
+    } else {
+        & $py -3.13 -I "$d\scripts\make_plan.py" $planCfg "$mid\${fl}_walls.json" $img[$fl] "$t\$fl"
+    }
+}
 
-foreach ($fl in "1F", "2F") {
+foreach ($fl in $floors) {
     Copy-Item "$t\$fl.jww" "$out\$fl.jww" -Force
     Copy-Item "$t\${fl}_壁と柱.png", "$t\${fl}_建具の配置.png" "$out\" -Force
     Copy-Item "$t\${fl}_meta.json" "$mid\" -Force
@@ -89,7 +99,7 @@ foreach ($fl in "1F", "2F") {
 }
 
 # 採点（手直しした正解図面があるときだけ。例: 06_正解図面（採点用）\1F_正解.jww）
-foreach ($fl in "1F", "2F") {
+foreach ($fl in $floors) {
     $gt = "$d\06_正解図面（採点用）$sub\${fl}_正解.jww"
     if (Test-Path $gt) {
         "== $fl の採点"
