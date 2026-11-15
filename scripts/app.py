@@ -394,7 +394,8 @@ class H(BaseHTTPRequestHandler):
             key = (str(pth), pth.stat().st_mtime_ns)
             if key not in _plot_cache:
                 import ui_plot
-                _plot_cache.clear()
+                if len(_plot_cache) >= 6:
+                    _plot_cache.clear()
                 _plot_cache[key] = ui_plot.render_png(pth)
             data = _plot_cache[key]
             return self.send(200, data, "image/png") if data else self.send(404, {"error": "empty"})
