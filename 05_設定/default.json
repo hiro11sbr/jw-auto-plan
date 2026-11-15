@@ -404,6 +404,7 @@
     "kamachi_style": 1,
     "library": "03_建具部品\\部品集_*.jww",
     "entrance_shift_mm": 200,
+    "entrance_hinge_gap_mm": 150,
     "entrance_bay_mm": 1820
   },
   "offsets_mm": {
