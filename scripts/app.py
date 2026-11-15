@@ -25,8 +25,8 @@ PY = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "p
 PORT = 8765
 DEFAULT_PDF = "plan_20261012.pdf"  # プラン1（出力は 02_出力 の直下）
 
-FLOORS = ("1F", "2F")  # 3階があれば、ここに "3F" を足す（作成中の画面の行は、階の数だけ出る）
-job = {"running": False, "log": [], "done": False, "ok": None, "name": None, "started": 0.0, "result": None,
+FLOORS = ("1F", "2F", "3F")  # 扱える階。実際に作る階は、作図ごとに job["floors"]（2階建て＝1F・2F、3階建て＝1F・2F・3F）
+job = {"floors": ("1F", "2F"), "running": False, "log": [], "done": False, "ok": None, "name": None, "started": 0.0, "result": None,
        "plan": "", "img": {}, "T": {}, "ended": None, "saved_to": None}
 lock = threading.Lock()
 _plot_cache = {}
@@ -63,6 +63,9 @@ def guess(imgs):
         c = [r for r in imgs if r["page"] == page]
         if c:
             pick[fl] = c[0]["file"]
+    c3 = [r for r in imgs if r["page"] == 4]
+    if c3:
+        pick["3F"] = c3[0]["file"]   # 3階建ての時だけ使う（画面で「3階建て」を選んだ時）
     if len(pick) < 2 and len(imgs) >= 2:  # 並びが違うPDF：大きい順の2枚をページ順に
         big = sorted(sorted(imgs, key=lambda r: -r["w"] * r["h"])[:2], key=lambda r: (r["page"], r["xref"]))
         pick = {"1F": big[0]["file"], "2F": big[1]["file"]}
@@ -119,15 +122,15 @@ def _mtime(p, t0):
     return m if m >= t0 else None
 
 
-def watch(stop, name, t0, T):
+def watch(stop, name, t0, T, floors):
     """作図の進み具合を、できるファイルの時刻で見る（run_all.ps1 には手を入れない）。
     部屋名の読み取り → 壁の判定（腰壁）→ 建具の判定（区画の確認）→ 階ごとの図面（一時の建具の配置）の順に、ファイルができる"""
     mid, out, tmp = dirs(name)
     t0 -= 1.0
 
     def once():
-        probes = {"p0": mid / f"{FLOORS[0]}_部屋名.json"}
-        for fl in FLOORS:
+        probes = {"p0": mid / f"{floors[0]}_部屋名.json"}
+        for fl in floors:
             probes[f"walls_{fl}"] = mid / f"{fl}_腰壁.json"
             probes[f"done_{fl}"] = mid / f"{fl}_区画の確認.png"
             probes[f"draw_{fl}"] = tmp / f"{fl}_建具の配置.png"
@@ -143,13 +146,14 @@ def watch(stop, name, t0, T):
 
 def progress(j, now):
     """作成中の画面に渡す、フェーズごとの状態と時間"""
+    fls = tuple(j.get("floors") or ("1F", "2F"))
     T = dict(j.get("T") or {})
     t_start, running, done, ok, ended = j["started"], j["running"], j["done"], j["ok"], j.get("ended")
     failed = bool(done and not ok)
     firsts = [v for k, v in T.items() if k.startswith(("walls_", "done_"))]
     p0 = T.get("p0") or (min(firsts) if firsts else None)
     segs, prev = [("extract", t_start, p0)], p0
-    for fl in FLOORS:
+    for fl in fls:
         d = T.get(f"done_{fl}")
         w = T.get(f"walls_{fl}") or d
         if w and prev and w < prev:
@@ -159,7 +163,7 @@ def progress(j, now):
         prev = d
     judged = prev
     pd = judged
-    for fl in FLOORS:
+    for fl in fls:
         e = T.get(f"draw_{fl}")
         segs.append((f"draw_{fl}", pd, e))
         pd = e
@@ -194,7 +198,7 @@ def progress(j, now):
         return "part" if any(seg[k][1] for k in ks) else "pend"
 
     def dots(prefix):
-        return [{"fl": fl, "on": bool(seg[f"{prefix}_{fl}"][1]), "go": cur == f"{prefix}_{fl}" and not failed} for fl in FLOORS]
+        return [{"fl": fl, "on": bool(seg[f"{prefix}_{fl}"][1]), "go": cur == f"{prefix}_{fl}" and not failed} for fl in fls]
 
     rows = []
 
@@ -206,7 +210,7 @@ def progress(j, now):
     add("walls", "壁を判定", "walls_", dots("walls"))
     add("open", "建具を判定", "open_", dots("open"))
     rows.append({"kind": "tr", "id": "tr1", "label": "全判定を完了し、図面の作成に移行", "on": bool(judged)})
-    for fl in FLOORS:
+    for fl in fls:
         add(f"draw_{fl}", f"{fl[:-1]}階を描画", f"draw_{fl}")
     rows.append({"kind": "tr", "id": "tr2", "label": "作図を完了し、検査に移行", "on": bool(pd) and (T.get("check_start") is not None or done)})
     add("check", "検査", "check")
@@ -219,13 +223,13 @@ def progress(j, now):
 
     # 右半分に出す図：描き終わった階があればその図面（白線）、なければ読んでいる階の元の図
     plan = j.get("plan", "")
-    last_plot = next((fl for fl in reversed(FLOORS) if T.get(f"draw_{fl}") or (finished and seg[f"draw_{fl}"][1])), None)
+    last_plot = next((fl for fl in reversed(fls) if T.get(f"draw_{fl}") or (finished and seg[f"draw_{fl}"][1])), None)
     if last_plot:
         prev_ = {"kind": "plot", "fl": last_plot,
                  "url": f"/api/plot?plan={urllib.parse.quote(plan)}&fl={last_plot}&v={int(T.get('draw_' + last_plot) or ended or 0)}"}
     else:
         tail = cur.rsplit("_", 1)[-1] if cur and "_" in cur else ""
-        fl = tail if tail in FLOORS else FLOORS[0]
+        fl = tail if tail in fls else fls[0]
         im = (j.get("img") or {}).get(fl)
         d_ = ROOT / "work" / "images" / plan if plan else ROOT / "work" / "images"
         prev_ = {"kind": "scan", "fl": fl, "url": ("/file?p=" + urllib.parse.quote(str((d_ / im).relative_to(ROOT)))) if im else None}
@@ -264,7 +268,7 @@ def deliver(dest_root):
         k += 1
     dest.mkdir(parents=True)
     names = []
-    for fl in FLOORS:
+    for fl in job.get("floors") or ("1F", "2F"):
         src = out / f"{fl}.jww"
         if src.exists():
             shutil.copy2(src, dest / src.name)
@@ -283,13 +287,14 @@ def decode(b):
     return b.decode("utf-8", "replace")
 
 
-def run_job(pdf_name, img1, img2, spec):
+def run_job(pdf_name, imgs, spec):
+    floors = tuple(fl for fl in FLOORS if imgs.get(fl))
     name = plan_name(pdf_name)
     with lock:
         job.update(running=True, log=[], done=False, ok=None, name=name or "プラン1", started=time.time(), result=None,
-                   plan=name, img={"1F": img1, "2F": img2}, T={}, ended=None, saved_to=None)
+                   plan=name, img=dict(imgs), floors=floors, T={}, ended=None, saved_to=None)
     stop = threading.Event()
-    threading.Thread(target=watch, args=(stop, name, job["started"], job["T"]), daemon=True).start()
+    threading.Thread(target=watch, args=(stop, name, job["started"], job["T"], floors), daemon=True).start()
 
     def say(s):
         with lock:
@@ -299,7 +304,9 @@ def run_job(pdf_name, img1, img2, spec):
             (ROOT / "05_設定" / "現在の仕様.txt").write_text(spec, encoding="utf-8")
             say(f"仕様：{spec}")
         cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "run_all.ps1"),
-               "-Pdf", f"01_入力\\{pdf_name}", "-Img1F", img1, "-Img2F", img2]
+               "-Pdf", f"01_入力\\{pdf_name}", "-Img1F", imgs["1F"], "-Img2F", imgs["2F"]]
+        if imgs.get("3F"):
+            cmd += ["-Img3F", imgs["3F"]]
         if name:
             cmd += ["-Name", name]
         say("図面づくりを始めます（数分かかります）")
@@ -317,7 +324,7 @@ def run_job(pdf_name, img1, img2, spec):
         mid = ROOT / "work" / "中間データ" / name if name else ROOT / "work" / "中間データ"
         res = {"out": str(out), "floors": []}
         say("機械検査をしています")
-        for fl in FLOORS:
+        for fl in floors:
             jww, meta = out / f"{fl}.jww", mid / f"{fl}_meta.json"
             f = {"fl": fl, "jww": jww.exists(), "images": [], "ng": None, "check_img": None, "check_log": ""}
             for nm in (f"{fl}_建具の配置.png", f"{fl}_壁と柱.png"):
@@ -476,7 +483,7 @@ class H(BaseHTTPRequestHandler):
                     spec = save_custom(c)
                 except ValueError as e:
                     return self.send(400, {"error": str(e)})
-            threading.Thread(target=run_job, args=(fn, data["img1"], data["img2"], spec), daemon=True).start()
+            threading.Thread(target=run_job, args=(fn, {k: data.get(f"img{i}") for i, k in ((1, "1F"), (2, "2F"), (3, "3F"))}, spec), daemon=True).start()
             return self.send(200, {"ok": True, "spec": spec})
         if u.path == "/api/open":  # 出力フォルダを開く
             p = Path(data.get("path", "")).resolve()

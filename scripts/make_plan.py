@@ -1200,17 +1200,26 @@ def shift_entrance_doors(placements, walls, cfg, runs=()):
         storage = any(fh != h and abs(c - hinge_end) <= 500 and min(fa, fb) - 600 <= line <= max(fa, fb) + 600
                       for fh, c, fa, fb in stor)
         d = -hinge_dir if storage else hinge_dir
-        move = d * sh
-        # 壁の端の柱の面（壁端から65）に枠が食い込まないように、ずらす量を抑える
-        # （W1126 を200ずらすと右の壁に食い込んだ：プラン1 1F、user 11/15）
-        edge = cfg["column"]["size_mm"] / 2 + 12.5
-        room = (w.b - edge - hi) if d > 0 else (lo - (w.a + edge))
-        if room < sh:
-            move = d * max(0.0, room)
+        hc = cfg["column"]["size_mm"] / 2
+        if not storage:
+            # 吊り元側の枠の端を、壁端の柱の面から sh（200）離す（user 11/15。「200ずらす」だと、ドアの幅によっては
+            # 柱に食い込んだ：プラン1 1F の W1126）
+            target = (w.b - hc - sh) if hinge_dir > 0 else (w.a + hc + sh)
+            move = target - hi if hinge_dir > 0 else target - lo
+        else:
+            move = d * sh
+            # 戸先側へずらす時も、壁端の柱の面（壁端から65）に枠が食い込まない範囲までにする
+            edge = hc + 12.5
+            room = (w.b - edge - hi) if d > 0 else (lo - (w.a + edge))
+            if room < sh:
+                move = d * max(0.0, room)
         x, y = pl["pos"]
         pl["pos"] = (x + move, y) if h else (x, y + move)
         pl["span"] = (lo + move, hi + move)
-        print(f"玄関ドアを{'戸先' if storage else '吊り元'}側へ{abs(move):g}ずらす（{bay}の間、{'吊り元側に玄関収納あり' if storage else '吊り元側に玄関収納なし'}）: {lo:.1f} -> {lo + move:.1f}")
+        if storage:
+            print(f"玄関ドアを戸先側へ{abs(move):g}ずらす（{bay}の間、吊り元側に玄関収納あり）: {lo:.1f} -> {lo + move:.1f}")
+        else:
+            print(f"玄関ドアの吊り元側の枠を、柱の面から{sh:g}離す（{bay}の間、吊り元側に玄関収納なし）: {lo:.1f} -> {lo + move:.1f}")
 
 
 def place_columns(walls, nodes, cfg, upper_walls, fittings=(), fp=None, mullions=()):
