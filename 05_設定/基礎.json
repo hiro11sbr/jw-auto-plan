@@ -31,7 +31,7 @@
   "dim": {
     "offset_mm": 900,
     "text_size_mm": 2.2,
-    "min_text_mm": 500,
+    "min_text_mm": 100,
     "bubble_radius_mm": 250
   },
   "anchor": {

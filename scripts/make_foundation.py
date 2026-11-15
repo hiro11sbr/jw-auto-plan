@@ -176,6 +176,8 @@ def main():
     x0 = min(xs) - B / 2 - off
 
     def chain(vals, horizontal, base):
+        """寸法線：補助線（布の芯の位置から、寸法線を少し越えるまで）・45°の斜線・寸法の数字（線の上／左）"""
+        edge = (min(ys) if horizontal else min(xs)) - B / 2 - 100  # 補助線の始まり（底盤の外から100あけ）
         for lvl, vv in ((0, vals), (1, [vals[0], vals[-1]])):
             b = base - lvl * 600
             if horizontal:
@@ -183,17 +185,21 @@ def main():
             else:
                 line((b, vv[0]), (b, vv[-1]), "dim")
             for t in vv:
-                p, q = ((t, b - 120), (t, b + 120)) if horizontal else ((b - 120, t), (b + 120, t))
-                line(p, q, "dim")
+                if horizontal:
+                    line((t, edge), (t, b - 150), "dim")
+                    line((t - 85, b - 85), (t + 85, b + 85), "dim")
+                else:
+                    line((edge, t), (b - 150, t), "dim")
+                    line((b - 85, t - 85), (b + 85, t + 85), "dim")
             for a_, b_ in zip(vv, vv[1:]):
                 L = b_ - a_
                 if L < minl:
                     continue
                 s = f"{L:,.0f}"
                 if horizontal:
-                    text(s, (a_ + b_) / 2 - len(s) * 55, b + 40, "dim")
+                    text(s, (a_ + b_) / 2 - len(s) * 55, b + 50, "dim")
                 else:
-                    text(s, b - 40, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
+                    text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
 
     chain(gx, True, y0)
     chain(gy, False, x0)
