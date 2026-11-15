@@ -30,13 +30,14 @@ job = {"floors": ("1F", "2F"), "running": False, "log": [], "done": False, "ok":
        "plan": "", "img": {}, "T": {}, "ended": None, "saved_to": None}
 lock = threading.Lock()
 _plot_cache = {}
+TMP_SPEC = "作図用_保存なし"  # 保存しないで作図する時の、一時の仕様の名前（毎回上書き・一覧には出さない）
 
 
 def specs():
-    names = sorted(p.stem for p in (ROOT / "05_設定" / "仕様").glob("*.json"))
+    names = sorted(p.stem for p in (ROOT / "05_設定" / "仕様").glob("*.json") if p.stem != TMP_SPEC)  # 保存しないで作図した時の一時の仕様は、一覧に出さない
     f = ROOT / "05_設定" / "現在の仕様.txt"
     cur = f.read_text(encoding="utf-8").strip() if f.exists() else ""
-    return {"names": names, "current": cur}
+    return {"names": names, "current": cur if cur in names else ""}
 
 
 def plan_name(pdf_name):
@@ -471,6 +472,13 @@ class H(BaseHTTPRequestHandler):
                 os.startfile(d)
                 return self.send(200, {"ok": True})
             return self.send(400, {"error": "保存先がありません"})
+        if u.path == "/api/save_spec":  # 自分で入れた数字を、名前を付けて仕様として保存する（作図とは別）
+            if str(data.get("name", "")).strip() == TMP_SPEC:
+                return self.send(400, {"error": "この名前は使えません。別の名前にしてください"})
+            try:
+                return self.send(200, {"ok": True, "name": save_custom(data), "specs": specs()})
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
         if u.path == "/api/start":
             with lock:
                 if job["running"]:
@@ -478,9 +486,9 @@ class H(BaseHTTPRequestHandler):
             fn = Path(data["pdf"]).name
             spec = data.get("spec")
             c = data.get("custom")
-            if c:  # 自分で数字を入れた仕様：05_設定/仕様/<保存名>.json を作ってから作図する（custom_spec.py）
+            if c:  # 自分で数字を入れた仕様：保存しない（一時の「_作図用」に書いて作図する。保存は「保存する」ボタンで別に）
                 try:
-                    spec = save_custom(c)
+                    spec = save_custom(dict(c, name=TMP_SPEC))
                 except ValueError as e:
                     return self.send(400, {"error": str(e)})
             threading.Thread(target=run_job, args=(fn, {k: data.get(f"img{i}") for i, k in ((1, "1F"), (2, "2F"), (3, "3F"))}, spec), daemon=True).start()
