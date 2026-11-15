@@ -198,10 +198,10 @@ def main():
             line((b, lo), (b, hi), "dim")
         for t in vals:
             if horizontal:
-                line((t, edge), (t, b + sign * 150), "dim")
+                line((t, edge), (t, b), "dim")
                 dot((t, b))
             else:
-                line((edge, t), (b + sign * 150, t), "dim")
+                line((edge, t), (b, t), "dim")
                 dot((b, t))
         for a_, b_ in zip(vals, vals[1:]):
             n = b_ - a_
