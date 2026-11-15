@@ -1446,7 +1446,7 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
                         st = 0.0 if st >= 359.9999 else st
                         swd = round(math.degrees(n1 - n0), 4) % 360.0 or 360.0
                         msp.add_arc(((c[0] - cx) / S, (c[1] - cy) / S), e["radius"] * abs(sx), st, swd, jwwattribs=at)
-    # 開口部の中心線：出入りできる開口に、壁と直角に、ドア芯から150ずつ（計300）。建具と同じ色（user 11/15）
+    # 開口部の中心線：出入りできる開口に、壁と直角に、ドア芯から200ずつ（計400）。建具と同じ色（user 11/15）
     for (p, q), color in opening_centre_lines(placements, lib, S):
         msp.add_line(((p[0] - cx) / S, (p[1] - cy) / S), ((q[0] - cx) / S, (q[1] - cy) / S),
                      jwwattribs={"layer": L.get("fitting", wl)["layer"], "pen_color": color, "pen_style": 1})
@@ -1495,13 +1495,13 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
 
 
 def walk_in_window(code):
-    """出入りできる窓か：窓の記号（例 06020T）の種類が縦すべり系（T を含む）で、高さ 1800 以上（user 11/15）"""
+    """出入りできる窓か：窓の記号（例 06020T・16020H）の種類が縦すべり系（T を含む）か引違い（H）で、高さ 1800 以上（user 11/15）"""
     if not code or len(code) < 6 or not code[:5].isdigit():
         return False
-    return "T" in code[5:] and int(code[3:5]) >= 18
+    return ("T" in code[5:] or "H" in code[5:]) and int(code[3:5]) >= 18
 
 
-def opening_centre_lines(placements, lib, S, half=150.0):
+def opening_centre_lines(placements, lib, S, half=200.0):
     """出入りできる開口（室内建具・玄関ドアの全部と、出入りできる窓）の中心線（user 11/15）。
     開口の幅の真ん中に、壁と直角に、ドア芯（枠の見込みの真ん中）から両側へ half ずつ。
     片引戸は戸袋でない側（部品の局所で左＝枠と中方立の間）、アウトセット片引戸は枠の外から外の真ん中。

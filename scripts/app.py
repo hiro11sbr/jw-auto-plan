@@ -73,6 +73,36 @@ def guess(imgs):
     return pick
 
 
+IMG_EXT = (".png", ".jpg", ".jpeg")
+_IMG2PDF = r"""
+import sys, pymupdf as fitz
+src, dst = sys.argv[1], sys.argv[2]
+pix = fitz.Pixmap(src)
+doc = fitz.open(); pg = doc.new_page(width=pix.width, height=pix.height)
+pg.insert_image(pg.rect, filename=src)
+doc.save(dst)
+print(pix.width, pix.height)
+"""
+
+
+def img_to_pdf(data):
+    """画像（PNG・JPG）を、その画像だけが入った1ページの PDF にする（作図は PDF から図を取り出す決まりのため）"""
+    tmp = Path(os.environ.get("TEMP", "")) / "jw_by_claude_img"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    src, dst = tmp / ("in.jpg" if data[:3] == b"\xff\xd8\xff" else "in.png"), tmp / "out.pdf"
+    src.write_bytes(data)
+    r = subprocess.run([str(PY), "-3.13", "-I", "-c", _IMG2PDF, str(src), str(dst)], capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
+    if r.returncode != 0 or not dst.exists():
+        raise ValueError("画像を読み込めませんでした")
+    w, h = (int(x) for x in decode(r.stdout).split()[:2])
+    if w * h < 1_000_000 or min(w, h) < 600:   # extract_plans.py が図として拾う大きさ
+        raise ValueError(f"画像が小さすぎます（{w}×{h}）。寸法の数字が読める大きさの画像を入れてください")
+    out = dst.read_bytes()
+    shutil.rmtree(tmp, ignore_errors=True)
+    return out
+
+
 ADD_PAGE = 100  # あとから足した PDF の図は、ページの番号を 100 番台・200 番台…にして、最初の PDF の図と名前がぶつからないようにする
 
 
@@ -464,8 +494,13 @@ class H(BaseHTTPRequestHandler):
         body = self.rfile.read(n) if n else b""
         if u.path == "/api/upload":
             fn = Path(urllib.parse.unquote(self.headers.get("X-Filename", ""))).name
+            if Path(fn).suffix.lower() in IMG_EXT:   # 画像：1ページの PDF に包んでから、PDF と同じ流れにする
+                try:
+                    body, fn = img_to_pdf(body), Path(fn).stem + ".pdf"
+                except ValueError as e:
+                    return self.send(400, {"error": str(e)})
             if not fn.lower().endswith(".pdf") or not body.startswith(b"%PDF"):
-                return self.send(400, {"error": "PDF ファイルを入れてください"})
+                return self.send(400, {"error": "PDF か画像（PNG・JPG）を入れてください"})
             (ROOT / "01_入力" / fn).write_bytes(body)
             plan = Path(urllib.parse.unquote(self.headers.get("X-Plan", ""))).name
             if plan and plan != fn and (ROOT / "01_入力" / plan).exists():   # 図を選ぶ画面で足した PDF：今の PDF の図に加える
