@@ -34,6 +34,10 @@ foreach ($p in $plans) {
         if (-not (Test-Path "$mid\$($fls[$k])_UB.json")) {
             & $py -3.13 -I "$d\scripts\ub_detect.py" "$img\$($imgs[$k])" "$mid\$($fls[$k])" $cfg | Select-Object -Last 1
         }
+        # キッチンの読み取り（<階>_キッチン.json）も、なければ作る（11/16）
+        if (-not (Test-Path "$mid\$($fls[$k])_キッチン.json")) {
+            & $py -3.13 -I "$d\scripts\kitchen_detect.py" "$img\$($imgs[$k])" "$mid\$($fls[$k])" $cfg | Select-Object -Last 1
+        }
     }
     for ($k = 0; $k -lt $fls.Count; $k++) {
         $f = $fls[$k]

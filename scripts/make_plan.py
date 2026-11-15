@@ -1461,6 +1461,81 @@ def ub_layout(ub_path, cfg):
     return out, cuts
 
 
+def _generic_kitchen():
+    """キッチンの部品がない時（配布用）の簡単な形：天板 2550×650・コンロ・シンク（用紙mm、1/50）。
+    向きは部品集と同じ（コンロが左の端、背中が上）"""
+    S = 50.0
+    es = []
+    for x0, y0, x1, y1 in ((0, 0, 2550, 650), (150, 70, 750, 600), (1500, 80, 2350, 580)):
+        for a, b, c, d in ((x0, y0, x1, y0), (x1, y0, x1, y1), (x1, y1, x0, y1), (x0, y1, x0, y0)):
+            es.append({"type": "LINE", "start_x": a / S, "start_y": b / S, "end_x": c / S, "end_y": d / S,
+                       "base": {"pen_color": 1, "pen_style": 1}})
+    for cx_, cy_ in ((300, 250), (600, 250), (450, 470)):
+        es.append({"type": "CIRCLE", "center_x": cx_ / S, "center_y": cy_ / S, "radius": 90 / S,
+                   "base": {"pen_color": 1, "pen_style": 1}})
+    return es
+
+
+def kitchen_layout(k_path, cfg, walls=()):
+    """読み取ったキッチン（<階>_キッチン.json）に、キッチンの部品を置く（user 11/16）。
+    コンロの端を、その先の壁の面（石膏ボードの面）に付ける。作業する側の天板の端を元の図の天板の端に
+    そろえる（背中に壁があれば、背中を壁の面に付ける）。返す：[{block, ents, pos, rot, sx, sy, kind}]"""
+    if not Path(k_path).exists():
+        return []
+    ks = json.load(open(k_path, encoding="utf-8"))
+    if not ks:
+        return []
+    kp = cfg.get("kitchen_part", {})
+    S = cfg["layers"]["scale"]
+    board = cfg["offsets_mm"]["board_face_inside"]
+    name, ents = kp.get("block"), None
+    lib_p = Path(__file__).resolve().parent.parent / kp.get("library", "").replace("\\", "/") if kp.get("library") else None
+    if name and lib_p and lib_p.is_file():
+        ents = {b["name"]: b["entities"] for b in ezjww.read_document(str(lib_p))["block_defs"]}.get(name)
+    if ents is None:
+        name, ents = "キッチン_I型_W2550", _generic_kitchen()
+    stove0, back0 = kp.get("stove", [-1, 0]), kp.get("back", [0, 1])
+    # 部品の天板の外形（長い線の範囲）
+    long_ = [e for e in ents if e["type"] == "LINE"
+             and math.hypot(e["end_x"] - e["start_x"], e["end_y"] - e["start_y"]) * S >= 500]
+    xs = [v * S for e in long_ for v in (e["start_x"], e["end_x"])]
+    ys = [v * S for e in long_ for v in (e["start_y"], e["end_y"])]
+    corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
+    depth = max(ys) - min(ys)
+    out = []
+    for k in ks:
+        best = None
+        for rot in (0, 90, 180, 270):
+            for sx in (1, -1):
+                a = math.radians(rot)
+                f = lambda v, a=a, sx=sx: (round(v[0] * sx * math.cos(a) - v[1] * math.sin(a)),  # noqa: E731
+                                           round(v[0] * sx * math.sin(a) + v[1] * math.cos(a)))
+                if best is None and f(stove0) == tuple(k["stove"]) and f(back0) == tuple(k["back"]):
+                    best = (rot, sx)
+        if best is None:
+            continue
+        rot, sx = best
+        a = math.radians(rot)
+        tc = [(x * sx * math.cos(a) - y * math.sin(a), x * sx * math.sin(a) + y * math.cos(a)) for x, y in corners]
+        h = k["horizontal"]
+        ti, ui = (0, 1) if h else (1, 0)
+        t_lo, t_hi = min(p[ti] for p in tc), max(p[ti] for p in tc)
+        u_lo, u_hi = min(p[ui] for p in tc), max(p[ui] for p in tc)
+        ss = k["stove"][ti]
+        bs = k["back"][ui]
+        dt = k["stove_face_mm"] - (t_hi if ss > 0 else t_lo)
+        if k.get("back_wall_mm") is not None:
+            back_face = k["back_wall_mm"] - bs * board
+            du = back_face - (u_hi if bs > 0 else u_lo)
+        else:
+            du = k["front_mm"] - (u_lo if bs > 0 else u_hi)
+        pos = (dt, du) if h else (du, dt)
+        out.append({"block": name, "ents": ents, "pos": pos, "rot": rot, "sx": sx, "sy": 1, "kind": "kitchen"})
+        print(f"キッチンの部品: {name} {'横' if h else '縦'} コンロ{tuple(k['stove'])} 背中{tuple(k['back'])}"
+              f" 回転{rot} 裏返し{'あり' if sx < 0 else 'なし'}（奥行き{depth:.0f}、元の図の天板 {k['depth_mm']}）")
+    return out
+
+
 def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, extras=(), toilets=(), ubs=()):
     S = cfg["layers"]["scale"]
     L = cfg["layers"]
@@ -2875,13 +2950,16 @@ def main():
     extras = dot_under_boxes(extras, cfg)
     toilet_path = walls_path.replace("_walls.json", "_便器.json")
     toilets = json.load(open(toilet_path, encoding="utf-8")) if Path(toilet_path).exists() else []
-    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets, ubs)
+    # キッチン：読み取った位置・向きに部品を置く（家具・設備のレイヤー。UB と同じ描き方、user 11/16）
+    kitchens = kitchen_layout(walls_path.replace("_walls.json", "_キッチン.json"), cfg, walls)
+    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets, list(ubs) + kitchens)
     # model mm = paper mm * scale + center; score_walls.py needs this to read corrected drawings back
     json.dump({"center_mm": center, "scale": cfg["layers"]["scale"],
                "placements": [{**{k: pl[k] for k in ("block", "word", "kind", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}, "label": pl.get("label")}
                               for pl in placements],  # 建具の置き方（部品の差し替え用）
                "ub": [{k: u[k] for k in ("block", "kind", "pos", "rot", "sx", "sy")} for u in ubs],
-               "ub_openings": [{k: c[k] for k in ("horizontal", "line", "span")} for c in ub_cuts]},
+               "ub_openings": [{k: c[k] for k in ("horizontal", "line", "span")} for c in ub_cuts],
+               "kitchen": [{k: u[k] for k in ("block", "pos", "rot", "sx", "sy")} for u in kitchens]},
               open(prefix + "_meta.json", "w", encoding="utf-8"))
     # 建具の枠に入り込んだ紫線・壁の線を切る（検査 C・D と同じ箱で。入隅すぐ脇の窓の枠に外壁の面が当たる等、11/13）
     import fix_fittings
