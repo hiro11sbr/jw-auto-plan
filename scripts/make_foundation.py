@@ -37,9 +37,50 @@ def rings(geom):
             yield list(h.coords)
 
 
+def anchor_points(walls, ac):
+    """アンカーの位置（案）：各壁の芯の上に、両端から end_mm の所、間が max_spacing_mm を超えたら等間隔に足す。
+    短い壁（両端の間が end_mm×2 未満）は真ん中に1本。"""
+    pts = []
+    for p, q in walls:
+        L = abs(q[0] - p[0]) + abs(q[1] - p[1])
+        if L < 1:
+            continue
+        ux, uy = (q[0] - p[0]) / L, (q[1] - p[1]) / L
+        e = ac["end_mm"]
+        ts = [L / 2] if L < 2 * e + 1 else [e, L - e]
+        i = 0
+        while i < len(ts) - 1:
+            gap = ts[i + 1] - ts[i]
+            if gap > ac["max_spacing_mm"]:
+                n = int(-(-gap // ac["max_spacing_mm"])) - 1  # 間に足す本数
+                ts[i + 1:i + 1] = [ts[i] + gap * k / (n + 1) for k in range(1, n + 1)]
+            i += 1
+        for t in ts:
+            pts.append((round(p[0] + ux * t, 1), round(p[1] + uy * t, 1)))
+    # 同じ場所（角・T で重なったもの）は1本に
+    out = []
+    for a in pts:
+        if all(abs(a[0] - b[0]) + abs(a[1] - b[1]) > ac["merge_mm"] for b in out):
+            out.append(a)
+    return out
+
+
+def draw_anchors(walls, ac, msp, P):
+    r = ac["radius_mm"]
+    attr = {"layer": ac["layer"], "pen_color": ac["color"], "pen_style": ac["style"]}
+    pts = anchor_points(walls, ac)
+    for x, y in pts:
+        msp.add_circle(P(x, y), r / S, jwwattribs=attr)
+        msp.add_line(P(x - r * 1.6, y), P(x + r * 1.6, y), jwwattribs=attr)
+        msp.add_line(P(x, y - r * 1.6), P(x, y + r * 1.6), jwwattribs=attr)
+    return len(pts)
+
+
 def main():
-    walls_path, out = sys.argv[1], sys.argv[2]
-    cfg_path = sys.argv[3] if len(sys.argv) > 3 else str(ROOT / "05_設定" / "基礎.json")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    want_anchor = "--anchor" in sys.argv  # アンカー（別レイヤ）を描く。条件はユーザーの確認待ちなので、既定では描かない
+    walls_path, out = args[0], args[1]
+    cfg_path = args[2] if len(args) > 2 else str(ROOT / "05_設定" / "基礎.json")
     fc = json.load(open(cfg_path, encoding="utf-8"))
     det = json.load(open(walls_path, encoding="utf-8"))
     walls = [(tuple(w["p1"]), tuple(w["p2"])) for w in det["walls"]]
@@ -53,6 +94,8 @@ def main():
     jww_env.apply_env(d)
     g = d.options["layer_groups"][0]
     g["scale"] = S
+    if "anchor" in fc:
+        g["layers"][fc["anchor"]["layer"]]["name"] = fc["anchor"].get("name", "アンカー")
     msp = d.modelspace()
 
     def P(x, y):
@@ -82,6 +125,9 @@ def main():
     # 通り芯（壁芯）
     for p, q in walls:
         line(p, q, "center")
+    if want_anchor:
+        n_anchor = draw_anchors(walls, fc["anchor"], msp, P)
+        print(f"アンカー: {n_anchor} 本（別レイヤ {fc['anchor']['layer']}）")
     # 寸法：下と左に、芯々の寸法。上と右に通り芯の記号
     # 通り芯＝壁が通っている線（縦の壁の x、横の壁の y）。壁の端だけの位置は通り芯にしない
     gx = sorted({round(w[0][0], 1) for w in walls if abs(w[0][0] - w[1][0]) < 1})
