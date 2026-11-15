@@ -171,47 +171,64 @@ def main():
         n_anchor = draw_anchors(walls, fc["anchor"], msp, P, cols)
         print(f"柱 {len(cols)} 本を避ける")
         print(f"アンカー: {n_anchor} 本（別レイヤ {fc['anchor']['layer']}）")
-    # 寸法：下と左に、芯々の寸法。上と右に通り芯の記号
+    # 寸法：4面に書く。同じ布の間を2回拾わない（user 11/15）。X方向の区間は、真ん中から左半分を下・右半分を上、
+    # Y方向の区間は、真ん中から下半分を左・上半分を右に振り分ける。全体の寸法は下と左に1本ずつ。
     # 通り芯＝布が通っている線（縦の布の x、横の布の y）。布の端だけの位置は通り芯にしない
     gx = sorted({round(w[0][0], 1) for w in walls if abs(w[0][0] - w[1][0]) < 1})
     gy = sorted({round(w[0][1], 1) for w in walls if abs(w[0][1] - w[1][1]) < 1})
     off = fc["dim"]["offset_mm"]
     minl = fc["dim"]["min_text_mm"]
-    y0 = min(ys) - B / 2 - off
-    x0 = min(xs) - B / 2 - off
-
-    def chain(vals, horizontal, base):
-        """寸法線：補助線（布の芯の位置から、寸法線を少し越えるまで）・交点の点・寸法の数字（線の上／左）"""
-        edge = (min(ys) if horizontal else min(xs)) - B / 2 - 100  # 補助線の始まり（底盤の外から100あけ）
-        for lvl, vv in ((0, vals), (1, [vals[0], vals[-1]])):
-            b = base - lvl * 600
-            if horizontal:
-                line((vv[0], b), (vv[-1], b), "dim")
-            else:
-                line((b, vv[0]), (b, vv[-1]), "dim")
-            for t in vv:
-                if horizontal:
-                    line((t, edge), (t, b - 150), "dim")
-                    dot((t, b))
-                else:
-                    line((edge, t), (b - 150, t), "dim")
-                    dot((b, t))
-            for a_, b_ in zip(vv, vv[1:]):
-                L = b_ - a_
-                if L < minl:
-                    continue
-                s = f"{L:,.0f}"
-                if horizontal:
-                    text(s, (a_ + b_) / 2 - len(s) * 55, b + 50, "dim")
-                else:
-                    text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
-
-    chain(gx, True, y0)
-    chain(gy, False, x0)
-    # 通り芯の記号（上と右）
     r = fc["dim"]["bubble_radius_mm"]
-    yt = max(ys) + B / 2 + off
-    xr = max(xs) + B / 2 + off
+    ext = B / 2 + 100  # 補助線の始まり（底盤の外から100あけ）
+    base = {"bottom": min(ys) - B / 2 - off, "left": min(xs) - B / 2 - off,
+            "top": max(ys) + B / 2 + off, "right": max(xs) + B / 2 + off}
+
+    def dim_chain(vals, side, whole=False, lvl=0):
+        """vals の隣どうしの区間を、side（bottom/top/left/right）の寸法線に書く。補助線・交点の点・数字"""
+        if len(vals) < 2:
+            return
+        horizontal = side in ("bottom", "top")
+        sign = 1 if side in ("top", "right") else -1
+        b = base[side] + sign * 600 * lvl if whole else base[side]
+        edge = {"bottom": min(ys), "left": min(xs), "top": max(ys), "right": max(xs)}[side] + sign * ext
+        lo, hi = vals[0], vals[-1]
+        if horizontal:
+            line((lo, b), (hi, b), "dim")
+        else:
+            line((b, lo), (b, hi), "dim")
+        for t in vals:
+            if horizontal:
+                line((t, edge), (t, b + sign * 150), "dim")
+                dot((t, b))
+            else:
+                line((edge, t), (b + sign * 150, t), "dim")
+                dot((b, t))
+        for a_, b_ in zip(vals, vals[1:]):
+            n = b_ - a_
+            if n < minl:
+                continue
+            s = f"{n:,.0f}"
+            if horizontal:
+                text(s, (a_ + b_) / 2 - len(s) * 55, b + (50 if sign > 0 else 50), "dim")
+            else:
+                text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
+
+    def halves(vals):
+        """真ん中（最初と最後の真ん中）で2つに分ける。真ん中をまたぐ区間は、中点が小さい側に入る。両側に共有の線を持たせる"""
+        mid = (vals[0] + vals[-1]) / 2
+        k = max(i for i, v in enumerate(vals) if i == 0 or (vals[i - 1] + v) / 2 <= mid)
+        return vals[:k + 1], vals[k:]
+
+    gxl, gxr = halves(gx)
+    gyl, gyr = halves(gy)  # gy は小さい（下）側が前半
+    dim_chain(gxl, "bottom")
+    dim_chain(gxr, "top")
+    dim_chain(gyl, "left")
+    dim_chain(gyr, "right")
+    dim_chain([gx[0], gx[-1]], "bottom", whole=True, lvl=1)
+    dim_chain([gy[0], gy[-1]], "left", whole=True, lvl=1)
+
+    # 通り芯の記号（上と右。寸法線の外側）
     def spaced(vals):
         """記号が重ならないように、前の記号から記号の直径以上はなれた通り芯だけに付ける"""
         out, last = [], None
@@ -221,20 +238,22 @@ def main():
                 last = v
         return out
 
+    yt = base["top"] + 700 + r
+    xr = base["right"] + 700 + r
     for i, t in enumerate(spaced(gx), 1):
-        line((t, max(ys) + B / 2 + 100), (t, yt - r), "center")
+        line((t, base["top"] + 250), (t, yt - r), "center")
         msp.add_circle(P(t, yt), r / S, jwwattribs={"layer": lay["dim"]["layer"], "pen_color": lay["dim"]["color"], "pen_style": 1})
         text(f"X{i}", t - r * 0.62, yt - 80, "dim", size=1.8)
     for i, t in enumerate(spaced(gy), 1):
-        line((max(xs) + B / 2 + 100, t), (xr - r, t), "center")
+        line((base["right"] + 250, t), (xr - r, t), "center")
         msp.add_circle(P(xr, t), r / S, jwwattribs={"layer": lay["dim"]["layer"], "pen_color": lay["dim"]["color"], "pen_style": 1})
         text(f"Y{i}", xr - r * 0.62, t - 80, "dim", size=1.8)
     # 表題と、基礎の寸法（仮）
-    ty = y0 - 1150
+    ty = base["bottom"] - 600 - 560
     text("基礎伏図（布基礎）　縮尺 1/50　※寸法はすべて仮", min(xs), ty, "dim", size=3.5, length=14000)
     note = (f"立上り幅{A}／底盤幅{B}／底盤厚{fc['teiban_thickness']}／"
             f"立上り高{fc['tachiagari_height']}（GL上）／根入れ{fc['neire']}（GL下）")
-    text(note, min(xs), ty - 520, "dim", size=2.4, length=14000)
+    text(note, min(xs), ty - 400, "dim", size=2.4, length=14000)
     tmp = Path(os.environ.get("TEMP", ".")) / "jw_foundation_tmp.jww"
     d.saveas(str(tmp))
     Path(out).parent.mkdir(parents=True, exist_ok=True)
