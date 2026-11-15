@@ -8,7 +8,7 @@
   "neire": 600,
   "layers": {
     "tachiagari": {"layer": 3, "color": 1, "style": 1},
-    "teiban": {"layer": 5, "color": 2, "style": 4},
+    "teiban": {"layer": 5, "color": 2, "style": 1},
     "center": {"layer": 4, "color": 3, "style": 5},
     "dim": {"layer": 10, "color": 2, "style": 1}
   },

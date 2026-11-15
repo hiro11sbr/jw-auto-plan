@@ -2,9 +2,9 @@
 
 usage: make_foundation.py <1F_walls.json> <出力.jww> [基礎.json]
 
-- 立上り：壁芯の両側に、立上りの幅の半分ずつ（外形線2本）。壁の下は全部に通す（提案の位置。
+- 立上り：壁芯の両側に、立上りの幅の半分ずつ（外形線2本）。壁の端は、角・T・自由な端のどこでも、幅の半分だけ飛び出す（立上りも底盤も）。壁の下は全部に通す（提案の位置。
   ユーザーが位置を指示するまでの仮、11/15）
-- 底盤（布のフーチング）：壁芯の両側に、底盤の幅の半分ずつ（点線）
+- 底盤（布のフーチング）：壁芯の両側に、底盤の幅の半分ずつ（実線。user 11/15）
 - 通り芯（壁芯）と、芯々の寸法、通り芯の記号
 - 値は 05_設定/基礎.json（立上り幅150・底盤幅600・底盤厚150・立上り高450・根入れ600・布基礎、全部仮）
 - アンカーボルトは別の図で描く（ユーザーの指示待ち）
@@ -72,9 +72,9 @@ def main():
         msp.add_text(s, (sx, sy), (ex, ey), size_x=size * 0.9, size_y=size, angle=angle,
                      jwwattribs={"layer": a["layer"], "pen_color": a["color"], "pen_style": 1})
 
-    # 底盤と立上り（壁芯から両側に半分ずつ。端は半分だけ延ばして、角や T をつなぐ）
+    # 底盤と立上り（壁芯から両側に半分ずつ。端（角・T・自由な端）は幅の半分だけ飛び出す（square cap））
     for width, key in ((B, "teiban"), (A, "tachiagari")):
-        shape = unary_union([LineString(w).buffer(width / 2, cap_style=2, join_style=2) for w in walls])
+        shape = unary_union([LineString(w).buffer(width / 2, cap_style=3, join_style=2) for w in walls])
         for r in rings(shape):
             for p, q in zip(r, r[1:]):
                 if abs(p[0] - q[0]) + abs(p[1] - q[1]) > 0.5:

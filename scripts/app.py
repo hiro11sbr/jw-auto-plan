@@ -8,6 +8,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -23,8 +24,11 @@ PY = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "p
 PORT = 8765
 DEFAULT_PDF = "plan_20261012.pdf"  # プラン1（出力は 02_出力 の直下）
 
-job = {"running": False, "log": [], "done": False, "ok": None, "name": None, "started": 0.0, "result": None}
+FLOORS = ("1F", "2F")  # 3階があれば、ここに "3F" を足す（作成中の画面の行は、階の数だけ出る）
+job = {"running": False, "log": [], "done": False, "ok": None, "name": None, "started": 0.0, "result": None,
+       "plan": "", "img": {}, "T": {}, "ended": None, "saved_to": None}
 lock = threading.Lock()
+_plot_cache = {}
 
 
 def specs():
@@ -98,6 +102,177 @@ def save_custom(c):
     return name
 
 
+def dirs(name):
+    """プランの 中間データ・出力・一時（run_all.ps1 が make_plan の結果を一時に書く所）"""
+    mid = ROOT / "work" / "中間データ" / name if name else ROOT / "work" / "中間データ"
+    out = ROOT / "02_出力" / name if name else ROOT / "02_出力"
+    tmp = Path(os.environ.get("TEMP", "")) / "jw_by_claude"
+    return mid, out, (tmp / name if name else tmp)
+
+
+def _mtime(p, t0):
+    try:
+        m = p.stat().st_mtime
+    except OSError:
+        return None
+    return m if m >= t0 else None
+
+
+def watch(stop, name, t0, T):
+    """作図の進み具合を、できるファイルの時刻で見る（run_all.ps1 には手を入れない）。
+    部屋名の読み取り → 壁の判定（腰壁）→ 建具の判定（区画の確認）→ 階ごとの図面（一時の建具の配置）の順に、ファイルができる"""
+    mid, out, tmp = dirs(name)
+    t0 -= 1.0
+
+    def once():
+        probes = {"p0": mid / f"{FLOORS[0]}_部屋名.json"}
+        for fl in FLOORS:
+            probes[f"walls_{fl}"] = mid / f"{fl}_腰壁.json"
+            probes[f"done_{fl}"] = mid / f"{fl}_区画の確認.png"
+            probes[f"draw_{fl}"] = tmp / f"{fl}_建具の配置.png"
+        for k, pth in probes.items():
+            if k not in T:
+                m = _mtime(pth, t0)
+                if m:
+                    T[k] = m
+    while not stop.wait(0.25):
+        once()
+    once()
+
+
+def progress(j, now):
+    """作成中の画面に渡す、フェーズごとの状態と時間"""
+    T = dict(j.get("T") or {})
+    t_start, running, done, ok, ended = j["started"], j["running"], j["done"], j["ok"], j.get("ended")
+    failed = bool(done and not ok)
+    firsts = [v for k, v in T.items() if k.startswith(("walls_", "done_"))]
+    p0 = T.get("p0") or (min(firsts) if firsts else None)
+    segs, prev = [("extract", t_start, p0)], p0
+    for fl in FLOORS:
+        d = T.get(f"done_{fl}")
+        w = T.get(f"walls_{fl}") or d
+        if w and prev and w < prev:
+            w = prev
+        segs.append((f"walls_{fl}", prev, w))
+        segs.append((f"open_{fl}", w, d))
+        prev = d
+    judged = prev
+    pd = judged
+    for fl in FLOORS:
+        e = T.get(f"draw_{fl}")
+        segs.append((f"draw_{fl}", pd, e))
+        pd = e
+    segs.append(("check", T.get("check_start"), T.get("check_end")))
+    if done and ok:  # 終わったのに印のファイルが見つからなかった所は、終わった扱いにする（表示だけ）
+        fixed, last = [], t_start
+        for k, s, e in segs:
+            s = s or last
+            e = e or max(s, ended or s)
+            fixed.append((k, s, e))
+            last = e
+        segs = fixed
+    cur = next((k for k, s, e in segs if e is None), None)
+    seg = {k: (s, e) for k, s, e in segs}
+
+    def tot(prefix):
+        t_, live = 0.0, None
+        for k, s, e in segs:
+            if k.startswith(prefix):
+                if s and e:
+                    t_ += max(0.0, e - s)
+                elif k == cur and s:
+                    live = s
+        return round(t_, 1), live
+
+    def state(prefix):
+        ks = [k for k, s, e in segs if k.startswith(prefix)]
+        if all(seg[k][1] for k in ks):
+            return "done"
+        if cur in ks:
+            return "fail" if failed else "now"
+        return "part" if any(seg[k][1] for k in ks) else "pend"
+
+    def dots(prefix):
+        return [{"fl": fl, "on": bool(seg[f"{prefix}_{fl}"][1]), "go": cur == f"{prefix}_{fl}" and not failed} for fl in FLOORS]
+
+    rows = []
+
+    def add(rid, label, prefix, dts=None):
+        s_, live = tot(prefix)
+        rows.append({"kind": "row", "id": rid, "label": label, "state": state(prefix), "sec": s_,
+                     "live": live if not failed else None, "dots": dts})
+    add("extract", "PDF から図を取り出す", "extract")
+    add("walls", "壁を判定", "walls_", dots("walls"))
+    add("open", "建具を判定", "open_", dots("open"))
+    rows.append({"kind": "tr", "id": "tr1", "label": "全判定を完了し、図面の作成に移行", "on": bool(judged)})
+    for fl in FLOORS:
+        add(f"draw_{fl}", f"{fl[:-1]}階を描画", f"draw_{fl}")
+    rows.append({"kind": "tr", "id": "tr2", "label": "作図を完了し、検査に移行", "on": bool(pd) and (T.get("check_start") is not None or done)})
+    add("check", "検査", "check")
+    res = j.get("result") or {}
+    ngs = sum((f.get("ng") or 0) for f in res.get("floors", []))
+    finished = bool(done and ok)
+    rows.append({"kind": "row", "id": "fin", "state": "done" if finished else "pend",
+                 "sec": round((ended or now) - t_start, 1) if finished else 0,
+                 "label": ("納品完了" if not ngs else f"完了（要確認 {ngs}件）") if finished else "完了", "live": None, "dots": None})
+
+    # 右半分に出す図：描き終わった階があればその図面（白線）、なければ読んでいる階の元の図
+    plan = j.get("plan", "")
+    last_plot = next((fl for fl in reversed(FLOORS) if T.get(f"draw_{fl}") or (finished and seg[f"draw_{fl}"][1])), None)
+    if last_plot:
+        prev_ = {"kind": "plot", "fl": last_plot,
+                 "url": f"/api/plot?plan={urllib.parse.quote(plan)}&fl={last_plot}&v={int(T.get('draw_' + last_plot) or ended or 0)}"}
+    else:
+        tail = cur.rsplit("_", 1)[-1] if cur and "_" in cur else ""
+        fl = tail if tail in FLOORS else FLOORS[0]
+        im = (j.get("img") or {}).get(fl)
+        d_ = ROOT / "work" / "images" / plan if plan else ROOT / "work" / "images"
+        prev_ = {"kind": "scan", "fl": fl, "url": ("/file?p=" + urllib.parse.quote(str((d_ / im).relative_to(ROOT)))) if im else None}
+    files = []
+    if finished:
+        for f in res.get("floors", []):
+            if f.get("jww"):
+                pth = dirs(plan)[1] / f"{f['fl']}.jww"
+                files.append({"fl": f["fl"], "name": f"{f['fl']}.jww", "size": pth.stat().st_size if pth.exists() else 0,
+                              "ng": f.get("ng"), "warn": f.get("warn"),
+                              "url": f"/download?plan={urllib.parse.quote(plan)}&fl={f['fl']}"})
+    return {"rows": rows, "title": "途中で止まりました" if failed else ("完了" if finished else "作成中"), "failed": failed,
+            "finished": finished, "total": round((ended or now) - t_start, 1) if t_start else 0, "live_total": bool(running),
+            "now": now, "preview": prev_, "files": files, "saved_to": j.get("saved_to")}
+
+
+def pick_folder():
+    """Windows のフォルダ選択の窓を出して、選んだフォルダを返す（やめたら None）"""
+    ps = ("Add-Type -AssemblyName System.Windows.Forms; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+          "$f=New-Object System.Windows.Forms.Form; $f.TopMost=$true; $f.ShowInTaskbar=$false; $f.StartPosition='CenterScreen'; "
+          "$f.Opacity=0; $f.Show(); $d=New-Object System.Windows.Forms.FolderBrowserDialog; "
+          "$d.Description='納品のファイルを入れるフォルダを選んでください'; $d.ShowNewFolderButton=$true; "
+          "if($d.ShowDialog($f) -eq 'OK'){ $d.SelectedPath }; $f.Close()")
+    r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, timeout=900)
+    return decode(r.stdout).strip() or None
+
+
+def deliver(dest_root):
+    """納品のファイルを、選んだフォルダの中の「プラン名」フォルダにコピーする（前のファイルを上書きしない）"""
+    plan = job.get("plan", "")
+    out = dirs(plan)[1]
+    base = plan or "プラン1"
+    dest, k = Path(dest_root) / base, 2
+    while dest.exists():
+        dest = Path(dest_root) / f"{base}_{k}"
+        k += 1
+    dest.mkdir(parents=True)
+    names = []
+    for fl in FLOORS:
+        src = out / f"{fl}.jww"
+        if src.exists():
+            shutil.copy2(src, dest / src.name)
+            names.append(src.name)
+    with lock:
+        job["saved_to"] = str(dest)
+    return {"dir": str(dest), "files": names}
+
+
 def decode(b):
     for enc in ("utf-8", "cp932"):
         try:
@@ -110,7 +285,10 @@ def decode(b):
 def run_job(pdf_name, img1, img2, spec):
     name = plan_name(pdf_name)
     with lock:
-        job.update(running=True, log=[], done=False, ok=None, name=name or "プラン1", started=time.time(), result=None)
+        job.update(running=True, log=[], done=False, ok=None, name=name or "プラン1", started=time.time(), result=None,
+                   plan=name, img={"1F": img1, "2F": img2}, T={}, ended=None, saved_to=None)
+    stop = threading.Event()
+    threading.Thread(target=watch, args=(stop, name, job["started"], job["T"]), daemon=True).start()
 
     def say(s):
         with lock:
@@ -131,11 +309,14 @@ def run_job(pdf_name, img1, img2, spec):
             if t:
                 say(t)
         p.wait()
+        stop.set()
+        job["T"]["proc_end"] = time.time()
+        job["T"]["check_start"] = time.time()
         out = ROOT / "02_出力" / name if name else ROOT / "02_出力"
         mid = ROOT / "work" / "中間データ" / name if name else ROOT / "work" / "中間データ"
         res = {"out": str(out), "floors": []}
         say("機械検査をしています")
-        for fl in ("1F", "2F"):
+        for fl in FLOORS:
             jww, meta = out / f"{fl}.jww", mid / f"{fl}_meta.json"
             f = {"fl": fl, "jww": jww.exists(), "images": [], "ng": None, "check_img": None, "check_log": ""}
             for nm in (f"{fl}_建具の配置.png", f"{fl}_壁と柱.png"):
@@ -153,6 +334,7 @@ def run_job(pdf_name, img1, img2, spec):
                 if ci.exists():
                     f["check_img"] = "/file?p=" + urllib.parse.quote(str(ci.relative_to(ROOT)))
             res["floors"].append(f)
+        job["T"]["check_end"] = time.time()
         ok = p.returncode == 0 and all(f["jww"] for f in res["floors"])
         say("できました" if ok else "途中で止まりました（下の記録を見てください）")
         with lock:
@@ -162,15 +344,16 @@ def run_job(pdf_name, img1, img2, spec):
         with lock:
             job["ok"] = False
     finally:
+        stop.set()
         with lock:
-            job.update(running=False, done=True)
+            job.update(running=False, done=True, ended=time.time())
 
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def send(self, code, body, ctype="application/json; charset=utf-8"):
+    def send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, str):
@@ -179,6 +362,8 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k_, v_ in (headers or {}).items():
+            self.send_header(k_, v_)
         self.end_headers()
         self.wfile.write(body)
 
@@ -193,7 +378,32 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/status":
             with lock:
                 j = dict(job, log=job["log"][-400:], elapsed=round(time.time() - job["started"]) if job["started"] else 0)
+            if j["started"]:
+                j["view"] = progress(j, time.time())
             return self.send(200, j)
+        if u.path == "/api/plot":  # 作った図面（jww）を白線の画像にして返す（作成中の右半分）
+            plan, fl = q.get("plan", [""])[0], q.get("fl", [""])[0]
+            if Path(plan).name != plan or fl not in FLOORS:
+                return self.send(404, {"error": "not found"})
+            mid, out, tmp = dirs(plan)
+            pth = next((x for x in (tmp / f"{fl}.jww", out / f"{fl}.jww") if x.is_file() and x.stat().st_mtime >= job["started"] - 1), None) \
+                or (out / f"{fl}.jww" if (out / f"{fl}.jww").is_file() else None)
+            if not pth:
+                return self.send(404, {"error": "not found"})
+            key = (str(pth), pth.stat().st_mtime_ns)
+            if key not in _plot_cache:
+                import ui_plot
+                _plot_cache.clear()
+                _plot_cache[key] = ui_plot.render_png(pth)
+            data = _plot_cache[key]
+            return self.send(200, data, "image/png") if data else self.send(404, {"error": "empty"})
+        if u.path == "/download":  # 納品のファイル（ドラッグして好きな所へ落とせる）
+            plan, fl = q.get("plan", [""])[0], q.get("fl", [""])[0]
+            pth = dirs(plan)[1] / f"{fl}.jww" if Path(plan).name == plan and fl in FLOORS else None
+            if not pth or not pth.is_file():
+                return self.send(404, {"error": "not found"})
+            return self.send(200, pth.read_bytes(), "application/octet-stream",
+                             {"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(pth.name)})
         if u.path.startswith("/ui/"):  # 画面の部品（ロゴ・背景）。scripts\ui のファイルを替えれば差し替わる
             p = (HERE / "ui" / Path(urllib.parse.unquote(u.path[4:])).name)
             ct = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg"}.get(p.suffix.lower())
@@ -231,6 +441,27 @@ class H(BaseHTTPRequestHandler):
             d.mkdir(parents=True, exist_ok=True)
             (d / fn).write_bytes(body)
             return self.send(200, {"path": str((d / fn).relative_to(ROOT)), "name": fn})
+        if u.path == "/api/save":  # 納品のファイルの保存先を選ばせて、コピーする
+            with lock:
+                ready_ = job["done"] and job["ok"]
+            if not ready_:
+                return self.send(400, {"error": "まだ作図が終わっていません"})
+            try:
+                d = pick_folder()
+            except Exception as e:  # noqa: BLE001
+                return self.send(500, {"error": f"フォルダを選ぶ窓を出せませんでした：{e}"})
+            if not d:
+                return self.send(200, {"canceled": True})
+            try:
+                return self.send(200, deliver(d))
+            except OSError as e:
+                return self.send(500, {"error": f"保存できませんでした：{e}"})
+        if u.path == "/api/open_saved":  # 保存したフォルダを開く
+            d = job.get("saved_to")
+            if d and Path(d).is_dir():
+                os.startfile(d)
+                return self.send(200, {"ok": True})
+            return self.send(400, {"error": "保存先がありません"})
         if u.path == "/api/start":
             with lock:
                 if job["running"]:
