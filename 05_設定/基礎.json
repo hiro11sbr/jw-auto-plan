@@ -7,10 +7,42 @@
   "tachiagari_height": 450,
   "neire": 600,
   "layers": {
-    "tachiagari": {"layer": 3, "color": 1, "style": 1},
-    "teiban": {"layer": 5, "color": 2, "style": 1},
-    "center": {"layer": 4, "color": 3, "style": 5},
-    "dim": {"layer": 10, "color": 2, "style": 1}
+    "tachiagari": {
+      "layer": 3,
+      "color": 1,
+      "style": 1
+    },
+    "teiban": {
+      "layer": 5,
+      "color": 2,
+      "style": 1
+    },
+    "center": {
+      "layer": 4,
+      "color": 3,
+      "style": 5
+    },
+    "dim": {
+      "layer": 10,
+      "color": 2,
+      "style": 1
+    }
   },
-  "dim": {"offset_mm": 900, "text_size_mm": 2.2, "min_text_mm": 500, "bubble_radius_mm": 250}
+  "dim": {
+    "offset_mm": 900,
+    "text_size_mm": 2.2,
+    "min_text_mm": 500,
+    "bubble_radius_mm": 250
+  },
+  "anchor": {
+    "_comment": "アンカーボルトの置き方（案。ユーザー確認待ち 11/15）。別レイヤに描く",
+    "layer": 7,
+    "name": "アンカー",
+    "color": 4,
+    "style": 1,
+    "end_mm": 200,
+    "max_spacing_mm": 2700,
+    "merge_mm": 300,
+    "radius_mm": 60
+  }
 }
