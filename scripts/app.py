@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # 「-I」で起動すると、この場所が自動では入らない（ui_plot を読み込むため）
 ROOT = HERE.parent
 PY = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "py.exe"
 PORT = 8765
