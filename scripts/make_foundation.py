@@ -1,13 +1,13 @@
-"""基礎伏図（布基礎）を、壁の判定（<階>_walls.json）から作る。
+"""基礎伏図（布基礎）を作る。布の位置は、ユーザーが指示するまでの仮として、1F の壁の判定（<階>_walls.json）と同じ線を使う（入力は「布の線」のリスト）。
 
 usage: make_foundation.py <1F_walls.json> <出力.jww> [基礎.json]
 
-- 立上り：壁芯の両側に、立上りの幅の半分ずつ（外形線2本）。壁の端は、角・T・自由な端のどこでも、幅の半分だけ飛び出す（立上りも底盤も）。壁の下は全部に通す（提案の位置。
+- 立上り：布の芯の両側に、立上りの幅の半分ずつ（外形線2本）。布の端は、角・T・自由な端のどこでも、幅の半分だけ飛び出す（立上りも底盤も）。布は全部の線に通す（提案の位置。
   ユーザーが位置を指示するまでの仮、11/15）
-- 底盤（布のフーチング）：壁芯の両側に、底盤の幅の半分ずつ（実線。user 11/15）
-- 通り芯（壁芯）と、芯々の寸法、通り芯の記号
+- 底盤（布のフーチング）：布の芯の両側に、底盤の幅の半分ずつ（実線。user 11/15）
+- 通り芯（布芯）と、芯々の寸法、通り芯の記号
 - 値は 05_設定/基礎.json（立上り幅150・底盤幅600・底盤厚150・立上り高450・根入れ600・布基礎、全部仮）
-- アンカーボルトは別の図で描く（ユーザーの指示待ち）
+- アンカーボルト：基礎伏図の中の別レイヤ（7番「アンカー」）。置き方は布の線だけから決める（図面にない開口・柱位置などは予測しない。ユーザーの指示が出てから）。--no-anchor で描かない
 作図の環境（色・線幅・縮尺）は平面詳細図と同じ（jww_env）。
 """
 import json
@@ -38,8 +38,8 @@ def rings(geom):
 
 
 def anchor_points(walls, ac):
-    """アンカーの位置（案）：各壁の芯の上に、両端から end_mm の所、間が max_spacing_mm を超えたら等間隔に足す。
-    短い壁（両端の間が end_mm×2 未満）は真ん中に1本。"""
+    """アンカーの位置（案）：各布の芯の上に、両端から end_mm の所、間が max_spacing_mm を超えたら等間隔に足す。
+    短い布（両端の間が end_mm×2 未満）は真ん中に1本。"""
     pts = []
     for p, q in walls:
         L = abs(q[0] - p[0]) + abs(q[1] - p[1])
@@ -78,7 +78,7 @@ def draw_anchors(walls, ac, msp, P):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    want_anchor = "--anchor" in sys.argv  # アンカー（別レイヤ）を描く。条件はユーザーの確認待ちなので、既定では描かない
+    want_anchor = "--no-anchor" not in sys.argv  # アンカー（別レイヤ7）。既定で描く
     walls_path, out = args[0], args[1]
     cfg_path = args[2] if len(args) > 2 else str(ROOT / "05_設定" / "基礎.json")
     fc = json.load(open(cfg_path, encoding="utf-8"))
@@ -115,21 +115,21 @@ def main():
         msp.add_text(s, (sx, sy), (ex, ey), size_x=size * 0.9, size_y=size, angle=angle,
                      jwwattribs={"layer": a["layer"], "pen_color": a["color"], "pen_style": 1})
 
-    # 底盤と立上り（壁芯から両側に半分ずつ。端（角・T・自由な端）は幅の半分だけ飛び出す（square cap））
+    # 底盤と立上り（布の芯から両側に半分ずつ。端（角・T・自由な端）は幅の半分だけ飛び出す（square cap））
     for width, key in ((B, "teiban"), (A, "tachiagari")):
         shape = unary_union([LineString(w).buffer(width / 2, cap_style=3, join_style=2) for w in walls])
         for r in rings(shape):
             for p, q in zip(r, r[1:]):
                 if abs(p[0] - q[0]) + abs(p[1] - q[1]) > 0.5:
                     line((round(p[0], 1), round(p[1], 1)), (round(q[0], 1), round(q[1], 1)), key)
-    # 通り芯（壁芯）
+    # 通り芯（布芯）
     for p, q in walls:
         line(p, q, "center")
     if want_anchor:
         n_anchor = draw_anchors(walls, fc["anchor"], msp, P)
         print(f"アンカー: {n_anchor} 本（別レイヤ {fc['anchor']['layer']}）")
     # 寸法：下と左に、芯々の寸法。上と右に通り芯の記号
-    # 通り芯＝壁が通っている線（縦の壁の x、横の壁の y）。壁の端だけの位置は通り芯にしない
+    # 通り芯＝布が通っている線（縦の布の x、横の布の y）。布の端だけの位置は通り芯にしない
     gx = sorted({round(w[0][0], 1) for w in walls if abs(w[0][0] - w[1][0]) < 1})
     gy = sorted({round(w[0][1], 1) for w in walls if abs(w[0][1] - w[1][1]) < 1})
     off = fc["dim"]["offset_mm"]
@@ -190,7 +190,7 @@ def main():
     d.saveas(str(tmp))
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tmp, out)
-    print(f"基礎伏図: 壁 {len(walls)} 本、立上り{A}・底盤{B} → {out}")
+    print(f"基礎伏図: 布 {len(walls)} 本、立上り{A}・底盤{B} → {out}")
 
 
 if __name__ == "__main__":
