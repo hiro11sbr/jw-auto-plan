@@ -296,7 +296,7 @@ def progress(j, now):
             if f.get("jww"):
                 pth = dirs(plan)[1] / f"{f['fl']}.jww"
                 files.append({"fl": f["fl"], "name": deliver_name(f["fl"]), "size": pth.stat().st_size if pth.exists() else 0,
-                              "ng": f.get("ng"), "warn": f.get("warn"),
+                              "ng": f.get("ng"), "warn": f.get("warn"), "read": f.get("read", 0),
                               "url": f"/download?plan={urllib.parse.quote(plan)}&fl={f['fl']}"})
     return {"rows": rows, "title": "途中で止まりました" if failed else ("完了" if finished else "作成中"), "failed": failed,
             "finished": finished, "total": round((ended or now) - t_start, 1) if t_start else 0, "live_total": bool(running),
@@ -403,6 +403,18 @@ def run_job(pdf_name, imgs, spec):
                 f["ng"], f["warn"] = (int(m[1]), int(m[2])) if m else (None, None)
                 if ci.exists():
                     f["check_img"] = "/file?p=" + urllib.parse.quote(str(ci.relative_to(ROOT)))
+            # 読み取りの検査（run_all.ps1 が判定のあとに出す）：確定ではなく「見てほしい所」
+            rj, rp = mid / f"{fl}_読み取りの検査.json", out / f"{fl}_読み取りの検査.png"
+            f.update(read=0, read_msgs=[], read_fix=[], read_img=None)
+            if rj.exists():
+                try:
+                    d = json.loads(rj.read_text(encoding="utf-8"))
+                    f["read_msgs"] = [str(x.get("msg", "")) for x in d.get("疑い", [])]
+                    f["read"], f["read_fix"] = len(f["read_msgs"]), [str(x) for x in d.get("自動修正", [])]
+                except Exception:
+                    pass
+            if f["read"] and rp.exists():
+                f["read_img"] = "/file?p=" + urllib.parse.quote(str(rp.relative_to(ROOT)))
             res["floors"].append(f)
         job["T"]["check_end"] = time.time()
         ok = p.returncode == 0 and all(f["jww"] for f in res["floors"])
