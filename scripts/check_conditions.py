@@ -6,6 +6,7 @@ usage: check_conditions.py <図.jww> <_meta.json> [検査画像.png]
 検査する条件（work/言われた条件の一覧.md）：
   A 部品    置き方（meta）どおりの位置に、部品集の線がすべてある
   B 残り    建具のレイヤーに、どの部品のものでもない線が残っていない（古い位置の部品の消し残し）
+  N 中心線  出入りできる開口（室内建具・玄関ドア・縦すべり系H1800以上の窓）に開口部の中心線がある
   C 紫線    石膏ボード納まりの線（色5）が、窓・建具の枠の中にはみ出していない
   D 貫通    壁の線（レイヤー3）が建具を貫通していない
   E 円弧    開き戸の円弧の両端が、扉・枠の線に付いている（中心点のずれ）
@@ -83,6 +84,18 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
     fit = [l for l in lines if l[2] == fl]
     FA = np.array([[l[0][0], l[0][1], l[1][0], l[1][1]] for l in fit], float).reshape(-1, 4)
     used = np.zeros(len(fit), bool)
+    # 開口部の中心線（出入りできる開口、ドア芯から150ずつ。user 11/15）：部品の線と同じに数える。ないものは NG（N）
+    import make_plan as mp
+    for (p, q), _c in mp.opening_centre_lines(meta["placements"], lib, S):
+        if len(fit):
+            hit = (np.hypot(FA[:, 0] - p[0], FA[:, 1] - p[1]) < 1) & (np.hypot(FA[:, 2] - q[0], FA[:, 3] - q[1]) < 1)
+            hit |= (np.hypot(FA[:, 0] - q[0], FA[:, 1] - q[1]) < 1) & (np.hypot(FA[:, 2] - p[0], FA[:, 3] - p[1]) < 1)
+        else:
+            hit = np.zeros(0, bool)
+        if hit.any():
+            used |= hit
+        else:
+            ng.append(("N", "開口部の中心線がない", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)))
     board = cfg["offsets_mm"]["board_face_inside"]
     added = cfg["offsets_mm"]["exterior_side"]["added_insulation"]
     grid, hc = cfg["input"]["grid_mm"], cfg["column"]["size_mm"] / 2

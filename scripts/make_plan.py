@@ -1446,6 +1446,10 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
                         st = 0.0 if st >= 359.9999 else st
                         swd = round(math.degrees(n1 - n0), 4) % 360.0 or 360.0
                         msp.add_arc(((c[0] - cx) / S, (c[1] - cy) / S), e["radius"] * abs(sx), st, swd, jwwattribs=at)
+    # 開口部の中心線：出入りできる開口に、壁と直角に、ドア芯から150ずつ（計300）。建具と同じ色（user 11/15）
+    for (p, q), color in opening_centre_lines(placements, lib, S):
+        msp.add_line(((p[0] - cx) / S, (p[1] - cy) / S), ((q[0] - cx) / S, (q[1] - cy) / S),
+                     jwwattribs={"layer": L.get("fitting", wl)["layer"], "pen_color": color, "pen_style": 1})
     # 便器：検出した向き・位置に置く（user 11/13）。形は cfg["toilet_part"]（部品の json のパス、
     # ROOT から）。"generic" か、ファイルがなければ汎用の形（配布用、11/14）
     if toilets:
@@ -1488,6 +1492,63 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
     for i in range(4):
         pline(pts[i], pts[(i + 1) % 4])
     d.saveas(path)
+
+
+def walk_in_window(code):
+    """出入りできる窓か：窓の記号（例 06020T）の種類が縦すべり系（T を含む）で、高さ 1800 以上（user 11/15）"""
+    if not code or len(code) < 6 or not code[:5].isdigit():
+        return False
+    return "T" in code[5:] and int(code[3:5]) >= 18
+
+
+def opening_centre_lines(placements, lib, S, half=150.0):
+    """出入りできる開口（室内建具・玄関ドアの全部と、出入りできる窓）の中心線（user 11/15）。
+    開口の幅の真ん中に、壁と直角に、ドア芯（枠の見込みの真ん中）から両側へ half ずつ。
+    片引戸は戸袋でない側（部品の局所で左＝枠と中方立の間）、アウトセット片引戸は枠の外から外の真ん中。
+    返り値 [((p, q), 線色)]（モデル mm）"""
+    import math
+    from place_fittings import outset_jambs
+    entry = {v[0]: v for v in (lib or {}).values()}
+    out = []
+    for pl in placements:
+        is_win = pl["kind"] == "window" if pl.get("kind") else pl["word"] in pf_WINDOWS
+        if is_win and not walk_in_window(pl.get("label")):
+            continue
+        en = entry.get(pl["block"])
+        if en is None:
+            continue
+        ents, word, W, off = en[1], en[3], float(en[4]), float(en[5])
+        x0, x1 = off, off + W
+        perp = []  # 壁と直角の線（局所 mm）: (x, y_lo, y_hi, 線色)
+        for e in ents:
+            if e["type"] != "LINE":
+                continue
+            ax, ay, bx, by = (v * S for v in (e["start_x"], e["start_y"], e["end_x"], e["end_y"]))
+            if abs(ax - bx) < 0.5 and abs(ay - by) >= 60:
+                perp.append(((ax + bx) / 2, min(ay, by), max(ay, by), e["base"]["pen_color"]))
+        jamb = [t for t in perp if x0 - 1 <= t[0] <= x0 + 25]
+        if jamb:
+            j = max(jamb, key=lambda t: t[2] - t[1])
+            yc, color = (j[1] + j[2]) / 2, j[3]
+        else:
+            yc, color = 0.0, 1
+        if word == "アウトセット片引戸":
+            jj = outset_jambs(ents, S)
+            xc = (jj[0] + jj[1]) / 2 if jj else x0 + W / 2
+        elif word == "片引戸":
+            mull = [t[0] for t in perp if x0 + 0.3 * W <= t[0] <= x0 + 0.7 * W]
+            inner = [t[0] for t in perp if x0 <= t[0] <= x0 + 40]
+            xc = (max(inner) + min(mull)) / 2 if mull and inner else x0 + W / 4
+        else:
+            xc = x0 + W / 2
+        ang = math.radians(pl["rot"])
+        ca, sa = math.cos(ang), math.sin(ang)
+
+        def tr(u, v, pl=pl, ca=ca, sa=sa):
+            u, v = u * pl["sx"], v * pl["sy"]
+            return (pl["pos"][0] + u * ca - v * sa, pl["pos"][1] + u * sa + v * ca)
+        out.append(((tr(xc, yc - half), tr(xc, yc + half)), color))
+    return out
 
 
 def generic_toilet(length=736.0, width=386.0):
@@ -2639,7 +2700,7 @@ def main():
     write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets)
     # model mm = paper mm * scale + center; score_walls.py needs this to read corrected drawings back
     json.dump({"center_mm": center, "scale": cfg["layers"]["scale"],
-               "placements": [{k: pl[k] for k in ("block", "word", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}
+               "placements": [{**{k: pl[k] for k in ("block", "word", "kind", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}, "label": pl.get("label")}
                               for pl in placements]},  # 建具の置き方（部品の差し替え用）
               open(prefix + "_meta.json", "w", encoding="utf-8"))
     # 建具の枠に入り込んだ紫線・壁の線を切る（検査 C・D と同じ箱で。入隅すぐ脇の窓の枠に外壁の面が当たる等、11/13）
