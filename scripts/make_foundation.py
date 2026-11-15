@@ -245,11 +245,23 @@ def main():
             else:
                 text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
 
-    # 寸法線：X方向は上、Y方向は左（原則。user 11/15）。1段目は通り芯どうしの区間（合計が全体の寸法と合う。途中でやめない）、
-    # 2段目は全体の寸法。
-    dim_chain(gx, "top")
+    # 寸法線：4面に書く。真ん中から振り分けて、それぞれの面で区間を拾う（同じ布の区間を2回拾わない。user 11/15）。
+    # X方向の区間：真ん中から左半分を下、右半分を上。Y方向の区間：下半分を左、上半分を右。
+    # 2つの半分は真ん中の通り芯でつながり、合計が最大寸法と合う（途中でやめない）。
+    # 最大寸法は X を上、Y を左に1本ずつだけ（固定）。
+    def halves(vals):
+        """最初と最後の真ん中で2つに分ける（真ん中の通り芯は両方が持つ）。中点が真ん中以下の区間までが前半"""
+        mid = (vals[0] + vals[-1]) / 2
+        k = max(i for i, v in enumerate(vals) if i == 0 or (vals[i - 1] + v) / 2 <= mid)
+        return vals[:k + 1], vals[k:]
+
+    gxl, gxr = halves(gx)
+    gyl, gyr = halves(gy)
+    dim_chain(gxl, "bottom")
+    dim_chain(gxr, "top")
+    dim_chain(gyl, "left")
+    dim_chain(gyr, "right")
     dim_chain([gx[0], gx[-1]], "top", whole=True, lvl=1)
-    dim_chain(gy, "left")
     dim_chain([gy[0], gy[-1]], "left", whole=True, lvl=1)
 
     # 通り芯の記号：910ごとに番号を振る（910に満たない所は .5）。次の910に布がなければ番号を飛ばす。
