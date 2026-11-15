@@ -25,9 +25,19 @@ foreach ($p in $plans) {
     New-Item -ItemType Directory -Force $t | Out-Null
     Remove-Item "$t\1F.jww", "$t\2F.jww" -ErrorAction SilentlyContinue
     "== $($p.sub) 1F / 2F"
-    & $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\1F_walls.json" "$img\$($p.i1)" "$t\1F" "$mid\2F_walls.json" > "$t\1F_log.txt" 2>&1
-    & $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\2F_walls.json" "$img\$($p.i2)" "$t\2F" > "$t\2F_log.txt" 2>&1
-    foreach ($fl in "1F", "2F") {
+    # 階は 1F・2F（i3 があれば 3F も）。各階はすぐ上の階の壁を柱位置の判断に使う（11/15）
+    $fls = @("1F", "2F"); $imgs = @($p.i1, $p.i2)
+    if ($p.i3) { $fls += "3F"; $imgs += $p.i3 }
+    foreach ($fl in "1F", "2F", "3F") { Remove-Item "$t\$fl.jww" -ErrorAction SilentlyContinue }
+    for ($k = 0; $k -lt $fls.Count; $k++) {
+        $f = $fls[$k]
+        if ($k + 1 -lt $fls.Count) {
+            & $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\${f}_walls.json" "$img\$($imgs[$k])" "$t\$f" "$mid\$($fls[$k + 1])_walls.json" > "$t\${f}_log.txt" 2>&1
+        } else {
+            & $py -3.13 -I "$d\scripts\make_plan.py" $cfg "$mid\${f}_walls.json" "$img\$($imgs[$k])" "$t\$f" > "$t\${f}_log.txt" 2>&1
+        }
+    }
+    foreach ($fl in $fls) {
         if (-not (Test-Path "$t\$fl.jww")) { "  $fl を作れなかった（$t\${fl}_log.txt）"; continue }
         Copy-Item "$t\$fl.jww" "$out\$fl.jww" -Force
         Copy-Item "$t\${fl}_壁と柱.png", "$t\${fl}_建具の配置.png" "$out\" -Force

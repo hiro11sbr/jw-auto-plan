@@ -352,8 +352,11 @@ def load_lib(cfg):
 def targets():
     out = []
     for sub in ("", "プラン2", "プラン3", "プラン4", "プラン5"):
-        for fl in ("1F", "2F"):
-            out.append((f"{sub or 'プラン1'} {fl}", ROOT / "02_出力" / sub / f"{fl}.jww", ROOT / "work" / "中間データ" / sub / f"{fl}_meta.json"))
+        for fl in ("1F", "2F", "3F"):
+            jww = ROOT / "02_出力" / sub / f"{fl}.jww"
+            if fl == "3F" and not jww.exists():
+                continue  # 3階建ての図がある時だけ（11/15）
+            out.append((f"{sub or 'プラン1'} {fl}", jww, ROOT / "work" / "中間データ" / sub / f"{fl}_meta.json"))
     out.append(("プラン1 1F 正解図", ROOT / "06_正解図面（採点用）" / "プラン1_1F_正解.jww", ROOT / "work" / "中間データ" / "1F_meta.json"))
     return out
 
