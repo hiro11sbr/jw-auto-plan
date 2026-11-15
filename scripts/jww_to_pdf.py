@@ -34,6 +34,8 @@ def draw(src,out):
         t=e['type']; b=e['base']
         if t=='LINE':
             setpen(b); a1=P(e['start_x'],e['start_y']); a2=P(e['end_x'],e['end_y']); c.line(*a1,*a2); n+=1
+        elif t=='POINT':
+            x,y=P(e['x'],e['y']); c.circle(x,y,0.6*MM,stroke=0,fill=1); n+=1
         elif t=='CIRCLE':
             setpen(b); x,y=P(e['center_x'],e['center_y']); c.circle(x,y,e['radius']*MM,stroke=1,fill=0); n+=1
         elif t=='ARC':

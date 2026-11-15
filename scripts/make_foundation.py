@@ -141,6 +141,11 @@ def main():
         a = lay[key]
         msp.add_line(P(*p), P(*q), jwwattribs={"layer": a["layer"], "pen_color": a["color"], "pen_style": a["style"]})
 
+    def dot(pt, key="dim"):
+        """寸法線と補助線の交点は、斜線ではなく点（Jw_cad の点）"""
+        a = lay[key]
+        msp.add_point(P(*pt), jwwattribs={"layer": a["layer"], "pen_color": a["color"], "pen_style": 1})
+
     def text(s, x, y, key, size=None, angle=0.0, length=None):
         a = lay[key]
         size = size or fc["dim"]["text_size_mm"]
@@ -176,7 +181,7 @@ def main():
     x0 = min(xs) - B / 2 - off
 
     def chain(vals, horizontal, base):
-        """寸法線：補助線（布の芯の位置から、寸法線を少し越えるまで）・45°の斜線・寸法の数字（線の上／左）"""
+        """寸法線：補助線（布の芯の位置から、寸法線を少し越えるまで）・交点の点・寸法の数字（線の上／左）"""
         edge = (min(ys) if horizontal else min(xs)) - B / 2 - 100  # 補助線の始まり（底盤の外から100あけ）
         for lvl, vv in ((0, vals), (1, [vals[0], vals[-1]])):
             b = base - lvl * 600
@@ -187,10 +192,10 @@ def main():
             for t in vv:
                 if horizontal:
                     line((t, edge), (t, b - 150), "dim")
-                    line((t - 85, b - 85), (t + 85, b + 85), "dim")
+                    dot((t, b))
                 else:
                     line((edge, t), (b - 150, t), "dim")
-                    line((b - 85, t - 85), (b + 85, t + 85), "dim")
+                    dot((b, t))
             for a_, b_ in zip(vv, vv[1:]):
                 L = b_ - a_
                 if L < minl:
