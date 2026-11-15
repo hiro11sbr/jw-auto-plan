@@ -43,5 +43,9 @@ foreach ($p in $plans) {
         Copy-Item "$t\${fl}_壁と柱.png", "$t\${fl}_建具の配置.png" "$out\" -Force
         Copy-Item "$t\${fl}_meta.json" "$mid\" -Force
     }
+    # 読み取りの検査（直さず、疑いだけ）：出力\<階>_読み取りの検査.png（11/15）
+    for ($k = 0; $k -lt $fls.Count; $k++) {
+        & $py -3.13 -I "$d\scripts\check_reading.py" "$img\$($imgs[$k])" "$mid\$($fls[$k])" $cfg --out $out | Select-Object -Last 1
+    }
 }
 & $py -3.13 -I "$d\scripts\check_conditions.py" --all

@@ -77,6 +77,14 @@ foreach ($fl in $floors) {
     & $py -3.13 -I "$d\scripts\toilet_place.py" $img[$fl] "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg "$mid\${fl}_便器.json" | Select-Object -Last 1
     # 4. 区画の確認（確かめ専用）。文字を消した画像を使う。印を付けるだけで、壁・建具の結果も図面も変えない
     & $py -3.13 -I "$d\scripts\regions_check.py" $img[$fl] $clean "$mid\${fl}_walls.json" "$mid\${fl}_openings.json" "$mid\${fl}_部屋名.json" $names $cfg "$mid\$fl"
+    # 5. 読み取りの検査：元の画像と、読み取った壁・建具・部屋を突き合わせ、読み違いの疑いを出す。確実なもの
+    #    （室内の壁の窓 → ドア）は中間データで直し、直したら室内建具の種類分けをやり直す（11/15）
+    #    結果は 中間\<階>_読み取りの検査.json と 出力\<階>_読み取りの検査.png（疑いの所に印）
+    & $py -3.13 -I "$d\scripts\check_reading.py" $img[$fl] "$mid\$fl" $cfg --fix --out $out | Select-Object -Last 1
+    $rd = Get-Content "$mid\${fl}_読み取りの検査.json" -Encoding UTF8 -Raw | ConvertFrom-Json
+    if ($rd.自動修正.Count -gt 0) {
+        & $py -3.13 -I "$d\scripts\interior_type.py" $img[$fl] "$mid\${fl}_openings.json" "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg
+    }
 }
 
 # 4. 壁のオフセット・柱・jww（確認画像は元の図面に重ねる。1F は上階の壁を柱位置の判断に使う）
