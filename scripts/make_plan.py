@@ -1965,9 +1965,14 @@ def entrance_casing(offsets, placements, cfg, lib=None):
                         end_ = e if end_ is None else end_
                     else:
                         end_ = ew
-                    if min(e, x) - 2 < pa < max(e, x) + 2:
+                    # 端が枠の端から額縁の少し先（枠の線のところ）までにある線（構造用面材の線は、前の工程で枠の線の
+                    # 位置まで残っていて、額縁を貫通していた。user 11/15）
+                    lo_w, hi_w = min(e, x) - 2, max(e, x) + 2
+                    if (pc_ - L) * si >= 0 or abs(pc_ - L) < ins - 0.5:
+                        lo_w, hi_w = min(e, x - d * 60) - 2, max(e, x - d * 60) + 2
+                    if lo_w < pa < hi_w:
                         pa = end_
-                    if min(e, x) - 2 < qa < max(e, x) + 2:
+                    if lo_w < qa < hi_w:
                         qa = end_
                     (p, q) = seg((pa, pc_), (qa, qc))
                 new.append(((p, q), color, label))
