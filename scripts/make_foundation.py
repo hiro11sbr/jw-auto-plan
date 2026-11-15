@@ -245,22 +245,24 @@ def main():
             else:
                 text(s, b - 50, (a_ + b_) / 2 - len(s) * 55, "dim", angle=90.0)
 
-    # 寸法線：4面に書く。真ん中から振り分けて、それぞれの面で区間を拾う（同じ布の区間を2回拾わない。user 11/15）。
-    # X方向の区間：真ん中から左半分を下、右半分を上。Y方向の区間：下半分を左、上半分を右。
-    # 2つの半分は真ん中の通り芯でつながり、合計が最大寸法と合う（途中でやめない）。
+    # 寸法線：4面に書く（user 11/15）。図の真ん中に縦の軸と横の軸をとり、布がどちら側にあるかで、近い側の寸法線に書く。
+    #   Y方向（縦の寸法）：横の布が、真ん中の縦の軸より左にあれば左の寸法線、右にあれば右の寸法線。
+    #   X方向（横の寸法）：縦の布が、真ん中の横の軸より下にあれば下の寸法線、上にあれば上の寸法線。
+    # どの寸法線にも両端の通り芯（最大寸法の端）を入れるので、区間を足すと最大寸法と合う（途中でやめない）。
     # 最大寸法は X を上、Y を左に1本ずつだけ（固定）。
-    def halves(vals):
-        """最初と最後の真ん中で2つに分ける（真ん中の通り芯は両方が持つ）。中点が真ん中以下の区間までが前半"""
-        mid = (vals[0] + vals[-1]) / 2
-        k = max(i for i, v in enumerate(vals) if i == 0 or (vals[i - 1] + v) / 2 <= mid)
-        return vals[:k + 1], vals[k:]
+    midx, midy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
-    gxl, gxr = halves(gx)
-    gyl, gyr = halves(gy)
-    dim_chain(gxl, "bottom")
-    dim_chain(gxr, "top")
-    dim_chain(gyl, "left")
-    dim_chain(gyr, "right")
+    def pick(vals, runs):
+        return sorted({vals[0], vals[-1], *runs})
+
+    h_left = [round(p[1], 1) for p, q in walls if abs(p[1] - q[1]) < 1 and (p[0] + q[0]) / 2 <= midx]
+    h_right = [round(p[1], 1) for p, q in walls if abs(p[1] - q[1]) < 1 and (p[0] + q[0]) / 2 > midx]
+    v_low = [round(p[0], 1) for p, q in walls if abs(p[0] - q[0]) < 1 and (p[1] + q[1]) / 2 <= midy]
+    v_up = [round(p[0], 1) for p, q in walls if abs(p[0] - q[0]) < 1 and (p[1] + q[1]) / 2 > midy]
+    dim_chain(pick(gx, v_low), "bottom")
+    dim_chain(pick(gx, v_up), "top")
+    dim_chain(pick(gy, h_left), "left")
+    dim_chain(pick(gy, h_right), "right")
     dim_chain([gx[0], gx[-1]], "top", whole=True, lvl=1)
     dim_chain([gy[0], gy[-1]], "left", whole=True, lvl=1)
 
