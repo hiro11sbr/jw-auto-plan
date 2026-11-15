@@ -73,9 +73,35 @@ def guess(imgs):
     return pick
 
 
+ADD_PAGE = 100  # あとから足した PDF の図は、ページの番号を 100 番台・200 番台…にして、最初の PDF の図と名前がぶつからないようにする
+
+
+def add_pdf(plan_pdf, pdf_name):
+    """図を選ぶ画面で、別の PDF を足す。図を取り出して、最初の PDF の図と同じフォルダに写す（作図は1つのフォルダの図を使うため）"""
+    name = plan_name(plan_pdf)
+    outdir = ROOT / "work" / "images" / name if name else ROOT / "work" / "images"
+    tmp = Path(os.environ.get("TEMP", "")) / "jw_by_claude_add"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    r = subprocess.run([str(PY), "-3.13", "-I", str(HERE / "extract_plans.py"), str(ROOT / "01_入力" / pdf_name), str(tmp)],
+                       capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
+    top = max([i["page"] for i in images_of(name)] + [0])
+    off = (top // ADD_PAGE + 1) * ADD_PAGE
+    for p in sorted(tmp.glob("p*_x*_*.png")):
+        m = re.match(r"p(\d+)_(x\d+_\d+x\d+\.png)", p.name)
+        if m:
+            shutil.copy2(p, outdir / f"p{int(m[1]) + off}_{m[2]}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return {"images": images_of(name), "error": None if r.returncode == 0 else r.stderr.decode("utf-8", "replace")[-800:]}
+
+
 def extract(pdf_name):
     name = plan_name(pdf_name)
     outdir = ROOT / "work" / "images" / name if name else ROOT / "work" / "images"
+    for p in outdir.glob("p*_x*_*.png"):   # 前に足した PDF の図（100 番台より上）は、PDF を置き直したら消す
+        m = re.match(r"p(\d+)_", p.name)
+        if m and int(m[1]) >= ADD_PAGE:
+            p.unlink()
     r = subprocess.run([str(PY), "-3.13", "-I", str(HERE / "extract_plans.py"), str(ROOT / "01_入力" / pdf_name), str(outdir)],
                        capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
     imgs = images_of(name)
@@ -207,20 +233,20 @@ def progress(j, now):
         s_, live = tot(prefix)
         rows.append({"kind": "row", "id": rid, "label": label, "state": state(prefix), "sec": s_,
                      "live": live if not failed else None, "dots": dts})
-    add("extract", "PDF から図を取り出す", "extract")
+    add("extract", "図を読み込む", "extract")
     add("walls", "壁を判定", "walls_", dots("walls"))
     add("open", "建具を判定", "open_", dots("open"))
-    rows.append({"kind": "tr", "id": "tr1", "label": "全判定を完了し、図面の作成に移行", "on": bool(judged)})
+    rows.append({"kind": "tr", "id": "tr1", "label": "判定が終わり、作図へ", "on": bool(judged)})
     for fl in fls:
-        add(f"draw_{fl}", f"{fl[:-1]}階を描画", f"draw_{fl}")
-    rows.append({"kind": "tr", "id": "tr2", "label": "作図を完了し、検査に移行", "on": bool(pd) and (T.get("check_start") is not None or done)})
+        add(f"draw_{fl}", f"{fl[:-1]}階を作図", f"draw_{fl}")
+    rows.append({"kind": "tr", "id": "tr2", "label": "作図が終わり、検査へ", "on": bool(pd) and (T.get("check_start") is not None or done)})
     add("check", "検査", "check")
     res = j.get("result") or {}
     ngs = sum((f.get("ng") or 0) for f in res.get("floors", []))
     finished = bool(done and ok)
     rows.append({"kind": "row", "id": "fin", "state": "done" if finished else "pend",
                  "sec": round((ended or now) - t_start, 1) if finished else 0,
-                 "label": ("納品完了" if not ngs else f"完了（要確認 {ngs}件）") if finished else "完了", "live": None, "dots": None})
+                 "label": ("完了" if not ngs else f"完了（直す所 {ngs}）") if finished else "完了", "live": None, "dots": None})
 
     # 右半分に出す図：描き終わった階があればその図面（白線）、なければ読んでいる階の元の図
     plan = j.get("plan", "")
@@ -239,7 +265,7 @@ def progress(j, now):
         for f in res.get("floors", []):
             if f.get("jww"):
                 pth = dirs(plan)[1] / f"{f['fl']}.jww"
-                files.append({"fl": f["fl"], "name": f"{f['fl']}.jww", "size": pth.stat().st_size if pth.exists() else 0,
+                files.append({"fl": f["fl"], "name": deliver_name(f["fl"]), "size": pth.stat().st_size if pth.exists() else 0,
                               "ng": f.get("ng"), "warn": f.get("warn"),
                               "url": f"/download?plan={urllib.parse.quote(plan)}&fl={f['fl']}"})
     return {"rows": rows, "title": "途中で止まりました" if failed else ("完了" if finished else "作成中"), "failed": failed,
@@ -252,10 +278,15 @@ def pick_folder():
     ps = ("Add-Type -AssemblyName System.Windows.Forms; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
           "$f=New-Object System.Windows.Forms.Form; $f.TopMost=$true; $f.ShowInTaskbar=$false; $f.StartPosition='CenterScreen'; "
           "$f.Opacity=0; $f.Show(); $d=New-Object System.Windows.Forms.FolderBrowserDialog; "
-          "$d.Description='納品のファイルを入れるフォルダを選んでください'; $d.ShowNewFolderButton=$true; "
+          "$d.Description='図面を入れるフォルダを選んでください'; $d.ShowNewFolderButton=$true; "
           "if($d.ShowDialog($f) -eq 'OK'){ $d.SelectedPath }; $f.Close()")
     r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, timeout=900)
     return decode(r.stdout).strip() or None
+
+
+def deliver_name(fl):
+    """納品のファイルの名前（02_出力 の中は 1F.jww のまま。渡す時だけ「1階平面詳細図.jww」にする）"""
+    return f"{fl[:-1]}階平面詳細図.jww"
 
 
 def deliver(dest_root):
@@ -272,8 +303,8 @@ def deliver(dest_root):
     for fl in job.get("floors") or ("1F", "2F"):
         src = out / f"{fl}.jww"
         if src.exists():
-            shutil.copy2(src, dest / src.name)
-            names.append(src.name)
+            shutil.copy2(src, dest / deliver_name(fl))
+            names.append(deliver_name(fl))
     with lock:
         job["saved_to"] = str(dest)
     return {"dir": str(dest), "files": names}
@@ -413,7 +444,7 @@ class H(BaseHTTPRequestHandler):
             if not pth or not pth.is_file():
                 return self.send(404, {"error": "not found"})
             return self.send(200, pth.read_bytes(), "application/octet-stream",
-                             {"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(pth.name)})
+                             {"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(deliver_name(fl))})
         if u.path.startswith("/ui/"):  # 画面の部品（ロゴ・背景）。scripts\ui のファイルを替えれば差し替わる
             p = (HERE / "ui" / Path(urllib.parse.unquote(u.path[4:])).name)
             ct = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg"}.get(p.suffix.lower())
@@ -436,6 +467,9 @@ class H(BaseHTTPRequestHandler):
             if not fn.lower().endswith(".pdf") or not body.startswith(b"%PDF"):
                 return self.send(400, {"error": "PDF ファイルを入れてください"})
             (ROOT / "01_入力" / fn).write_bytes(body)
+            plan = Path(urllib.parse.unquote(self.headers.get("X-Plan", ""))).name
+            if plan and plan != fn and (ROOT / "01_入力" / plan).exists():   # 図を選ぶ画面で足した PDF：今の PDF の図に加える
+                return self.send(200, add_pdf(plan, fn))
             return self.send(200, extract(fn))
         data = json.loads(body or b"{}")
         if u.path == "/api/select":  # 前に入れたPDFを選ぶ
