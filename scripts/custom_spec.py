@@ -87,7 +87,9 @@ def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, p
         raise ValueError(f"柱は105だけです（入力 {vals['col']:g}）")
     if not any(abs(vals["pb"] - x) < 0.01 for x in (0.0, 12.5)):
         raise ValueError(f"石膏ボードは なし（0）か 12.5 だけです（入力 {vals['pb']:g}）")
-    off = faces(**vals)
+    draw_board = vals["pb"] > 0
+    # 石膏ボードなしでも、寸法・建具の枠は12.5の時と同じ。石膏ボードの線を描かないだけ（user 11/15）
+    off = faces(**dict(vals, pb=12.5))
     spec_dir = SETTINGS / "仕様"
     old = spec_dir / f"{name}.json"
     if old.exists() and "_入力" not in json.loads(old.read_text(encoding="utf-8")):
@@ -105,6 +107,7 @@ def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, p
         "placement": {"library": library},
         "column": {"size_mm": vals["col"]},
         "toilet_part": "generic",
+        "draw_board": draw_board,
         "offsets_mm": off,
     }
     path = spec_dir / f"{name}.json"

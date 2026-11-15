@@ -192,7 +192,8 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             e_ = 15
         a, b = tr((x0 + e_) / S, r0 / S), tr((x1 - e_) / S, r1 / S)
         # M 窓：壁の戻りの紫線（枠の端から12.5の所）が、窓の部品の線に接している（user 11/14：4mmくらい短い）
-        if word in pf.WINDOWS:
+        # （石膏ボードなしの仕様では戻りの線を描かないので見ない）
+        if word in pf.WINDOWS and cfg.get("draw_board", True):
             hz = pl["horizontal"]
             alo = lambda pt: pt[0] if hz else pt[1]  # noqa: E731
             acr = lambda pt: pt[1] if hz else pt[0]  # noqa: E731

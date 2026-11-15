@@ -1364,7 +1364,11 @@ def write_jww(path, walls, offsets, cols, cfg, center, placements=(), lib=None, 
     wl, cl, fr = L["wall"], L["center"], L["frame"]
     for w in walls:
         line(w.pt(w.a), w.pt(w.b), cl["layer"], cl["color"], cl["style"])
-    for (p, q), color, _ in offsets:
+    # 石膏ボードなしの仕様（draw_board: false）：寸法・建具はボード12.5の時のまま、石膏ボードの線だけ描かない（user 11/15）
+    no_board = not cfg.get("draw_board", True)
+    for (p, q), color, lb in offsets:
+        if no_board and lb == "石膏ボード面":
+            continue
         line(p, q, wl["layer"], color, wl["style"])
     for (p, q), layer, color, style in extras:  # wall returns and 窓台 at windows
         line(p, q, layer, color, style)
@@ -1965,6 +1969,8 @@ def window_extras(placements, cfg, spaces=(), lib=None):
         for t, inw in ((lo, 1), (hi, -1)):
             out.append((across(t, L - s * col, reach(t, L - s * col, inw)), lay["layer"], lay["structure_color"], st))
         for t, inw in ((lo + embed, 1), (hi - embed, -1)):
+            if not cfg.get("draw_board", True):
+                break  # 石膏ボードなしの仕様：窓の戻りの石膏ボードの線も描かない
             out.append((across(t, L - s * board, reach(t, L - s * board, inw)), lay["layer"], lay["finish_color"], st))
         if no_sill:
             print(f"窓台なし（ガレージへのドア代わりの窓）: {pl['block']}")
@@ -2341,6 +2347,21 @@ def main():
 
         placements, skipped = pf.plan(ops, lib, cfg, Mapper(det, cfg["input"]["grid_mm"]), outside, larger_side, perp_at)
         shift_entrance_doors(placements, walls, cfg, find_entrance_runs(det, img_path, walls_path.replace("_walls.json", ""), cfg))
+        # バルコニーの手すり壁の開口は窓ではない（窓の室内側がバルコニーなら置かない。開口は人が描く。
+        # プラン2 2F x=-120 と y=0 の3つ、user 11/15）
+        balc = [poly for poly, k in spaces if "バルコニー" in k]
+        if balc:
+            kept_ = []
+            for pl in placements:
+                if pl["word"] in pf_WINDOWS:
+                    mid_ = (pl["span"][0] + pl["span"][1]) / 2
+                    L_, s_ = pl["line"], pl["outward"]
+                    probe_ = Point(mid_, L_ - s_ * 300) if pl["horizontal"] else Point(L_ - s_ * 300, mid_)
+                    if any(b.contains(probe_) for b in balc):
+                        print(f"バルコニーの手すり壁の開口なので窓を置かない: {pl['block']} 線{L_:g}")
+                        continue
+                kept_.append(pl)
+            placements = kept_
         for pl in placements:
             if pl["word"] in ENTRANCE_WORDS:
                 print(f"玄関ドア: {'横' if pl['horizontal'] else '縦'} 線{pl['line']:g} 枠{pl['span'][0]:.1f}〜{pl['span'][1]:.1f} 幅{pl['width']:g} 吊り元{'小' if pl['sx'] == 1 else '大'}側")
