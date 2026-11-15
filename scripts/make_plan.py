@@ -1891,7 +1891,7 @@ def garage_door_window(pl, spaces, cfg):
     return any(g.contains(probe) for g in gs)
 
 
-def entrance_casing(offsets, placements, cfg):
+def entrance_casing(offsets, placements, cfg, lib=None):
     """額縁 at the entrance door's jambs on the room side (user's correction プラン3 1F, 10/27;
     provisional sizes, details to come): the wall stops 21 short of the frame and is closed
     there (structure line from the added insulation's face to the column face); the casing, 21
@@ -1900,9 +1900,12 @@ def entrance_casing(offsets, placements, cfg):
     off = cfg["offsets_mm"]
     lay = cfg["layers"]["wall"]
     ec = cfg["placement"]["entrance_casing"]
-    t_, proud, reach = ec["thickness_mm"], ec["proud_mm"], ec["frame_reach_mm"]
+    t_, proud = ec["thickness_mm"], ec["proud_mm"]
     col, board = off["column_face"], off["board_face_inside"]
     ins = off["exterior_side"]["added_insulation"]
+    # 額縁の枠側の線は、付加断熱の外面まで（そこに玄関ドアの枠の耳の裏が付く。正解図、user 11/15。
+    # 前は壁芯から95の決め打ちで、ドアの位置が変わると額縁が枠に重なった）
+    reach = ins
     extras = []
     for pl in placements:
         if pl["word"] not in ENTRANCE_WORDS:
@@ -1912,24 +1915,67 @@ def entrance_casing(offsets, placements, cfg):
 
         def seg(a, b, h=h):  # (along, across) -> model
             return ((a[0], a[1]), (b[0], b[1])) if h else ((a[1], a[0]), (b[1], b[0]))
+        part_segs = []
+        if lib and pl["block"] in lib:
+            part_segs = block_lines_mm([e_ for e_ in lib[pl["block"]][1] if e_["type"] == "LINE"], pl, cfg["layers"]["scale"])
+
+        def first_hit(e, inward, c):
+            """枠の端 e から内側（inward）へ、壁の長手の線（壁を横切る位置 c）を進めて最初に当たる部品の線"""
+            best = None
+            for (p1, p2) in part_segs:
+                (a1, c1), (a2, c2) = (p1, p2) if h else ((p1[1], p1[0]), (p2[1], p2[0]))
+                if abs(c2 - c1) < 1e-6 or not (min(c1, c2) - 0.01 <= c <= max(c1, c2) + 0.01):
+                    continue
+                a = a1 + (a2 - a1) * (c - c1) / (c2 - c1)
+                dd = (a - e) * inward
+                if -0.5 <= dd <= 150 and (best is None or dd < best):
+                    best = dd
+            return None if best is None else e + inward * best
+        def frame_edge(e, inward):
+            """額縁が突き当たる枠の位置：枠の端 e から内側へ、額縁の範囲（室内の額縁の面〜付加断熱の外面の手前）で
+            最初に当たる部品の線（正解図：枠の端から72.5の枠の立ち上がり。user 11/15）"""
+            best = None
+            for (p1, p2) in part_segs:
+                for k_ in range(41):
+                    s_ = k_ / 40
+                    a_ = (p1[0] + (p2[0] - p1[0]) * s_) if h else (p1[1] + (p2[1] - p1[1]) * s_)
+                    c_ = (p1[1] + (p2[1] - p1[1]) * s_) if h else (p1[0] + (p2[0] - p1[0]) * s_)
+                    if not (min(L - si * (ins - 1), L + si * (board + proud)) <= c_ <= max(L - si * (ins - 1), L + si * (board + proud))):
+                        continue
+                    dd = (a_ - e) * inward
+                    if dd >= -0.5 and (best is None or dd < best):
+                        best = dd
+            return None if best is None else e + inward * best
         for e, d in ((lo, -1), (hi, 1)):
-            x = e - d * t_  # the casing's frame-side edge (the casing stands in the frame's end)
-            # the outer lines (outdoor side) that stop inside the casing stop at the wall's end
+            ef = frame_edge(e, -d)  # 額縁の枠側の面
+            if ef is None or abs(ef - e) > 200:
+                ef = e - d * t_  # （部品の線がない時は今までどおり：枠の端から21内側）
+            x = ef
+            ew = ef + d * t_  # 額縁の壁側の面：壁の線はここで止めて閉じる
+            # the lines that stop inside the casing stop at its wall side (ew)
             new = []
             for (p, q), color, label in offsets:
                 (pa, pc_), (qa, qc) = ((p[0], p[1]), (q[0], q[1])) if h else ((p[1], p[0]), (q[1], q[0]))
-                if abs(pc_ - qc) < EPS and (pc_ - L) * si < 0 and abs(pc_ - L) <= 200:
+                if abs(pc_ - qc) < EPS and abs(pc_ - L) <= 200:
+                    # 付加断熱の外面より外の線（付加断熱の面・通気層・外壁の面）は、玄関ドアの枠の外側の出っ張りに
+                    # 当たるまでのばす（枠の端で止めると、枠の手前で途切れた。正解図、user 11/15）。
+                    # それより内の線（面材・柱の面・ボード）は、額縁の壁側の面で止める
+                    if (pc_ - L) * si < 0 and abs(pc_ - L) >= ins - 0.5:
+                        end_ = first_hit(e, -d, pc_)
+                        end_ = e if end_ is None else end_
+                    else:
+                        end_ = ew
                     if min(e, x) - 2 < pa < max(e, x) + 2:
-                        pa = e
+                        pa = end_
                     if min(e, x) - 2 < qa < max(e, x) + 2:
-                        qa = e
+                        qa = end_
                     (p, q) = seg((pa, pc_), (qa, qc))
                 new.append(((p, q), color, label))
             offsets = new
             st = lay["style"]
-            extras.append((seg((e, L - si * ins), (e, L + si * col)), lay["layer"], lay["structure_color"], st))
-            extras.append((seg((e, L + si * col), (e, L + si * (board + proud))), lay["layer"], lay["finish_color"], st))
-            extras.append((seg((e, L + si * (board + proud)), (x, L + si * (board + proud))), lay["layer"], lay["finish_color"], st))
+            extras.append((seg((ew, L - si * ins), (ew, L + si * col)), lay["layer"], lay["structure_color"], st))
+            extras.append((seg((ew, L + si * col), (ew, L + si * (board + proud))), lay["layer"], lay["finish_color"], st))
+            extras.append((seg((ew, L + si * (board + proud)), (x, L + si * (board + proud))), lay["layer"], lay["finish_color"], st))
             extras.append((seg((x, L + si * (board + proud)), (x, L - si * reach)), lay["layer"], lay["finish_color"], st))
         print(f"玄関ドアの額縁（厚{t_}・暫定）: {pl['block']}")
     return offsets, extras
@@ -2532,7 +2578,7 @@ def main():
                 ts = [t for (a_, b_) in block_lines_mm(ents_, pl, cfg["layers"]["scale"]) for t in ((a_[0], b_[0]) if h_ else (a_[1], b_[1]))]
                 print("WINDBG", pl["block"], "span", [round(v, 1) for v in pl["span"]], "extent", round(min(ts), 1), round(max(ts), 1), "line", pl["line"])
         offsets = cut_openings(offsets, placements, cfg, lib=lib)
-        offsets, casing = entrance_casing(offsets, placements, cfg)
+        offsets, casing = entrance_casing(offsets, placements, cfg, lib=lib)
         extras = window_extras(placements, cfg, spaces, lib=lib) + casing
         names_path = walls_path.replace("_walls.json", "_部屋名.json")
         if Path(names_path).exists():
