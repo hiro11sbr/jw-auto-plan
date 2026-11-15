@@ -41,7 +41,9 @@
     "color": 4,
     "style": 1,
     "end_mm": 200,
-    "max_spacing_mm": 2700,
+    "max_spacing_mm": 1800,
+    "short_mm": 455,
+    "col_clear_mm": 150,
     "merge_mm": 300,
     "radius_mm": 60
   }

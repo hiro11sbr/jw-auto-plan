@@ -1,6 +1,6 @@
 """基礎伏図（布基礎）を作る。布の位置は、ユーザーが指示するまでの仮として、1F の壁の判定（<階>_walls.json）と同じ線を使う（入力は「布の線」のリスト）。
 
-usage: make_foundation.py <1F_walls.json> <出力.jww> [基礎.json]
+usage: make_foundation.py <1F_walls.json> <出力.jww> [基礎.json] [--plan 平面詳細図.jww]（--plan があれば、その柱を避けてアンカーを置く）
 
 - 立上り：布の芯の両側に、立上りの幅の半分ずつ（外形線2本）。布の端は、角・T・自由な端のどこでも、幅の半分だけ飛び出す（立上りも底盤も）。布は全部の線に通す（提案の位置。
   ユーザーが位置を指示するまでの仮、11/15）
@@ -37,17 +37,37 @@ def rings(geom):
             yield list(h.coords)
 
 
-def anchor_points(walls, ac):
+def read_columns(plan_jww, meta_json, size=105):
+    """平面詳細図の柱（105角・対角線2本）の中心を読む。model mm = paper mm × 縮尺 + center"""
+    meta = json.load(open(meta_json, encoding="utf-8"))
+    cx, cy = meta["center_mm"]
+    sc = meta["scale"]
+    d = ezjww.read_document(plan_jww)
+    diag = size * 2 ** 0.5 / sc
+    seen = {}
+    for e in d["entities"]:
+        if e["type"] != "LINE":
+            continue
+        x1, y1, x2, y2 = e["start_x"], e["start_y"], e["end_x"], e["end_y"]
+        if abs(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 - diag) < 0.02:
+            m = (round((x1 + x2) / 2, 2), round((y1 + y2) / 2, 2))
+            seen[m] = seen.get(m, 0) + 1
+    return [(round(x * sc + cx, 1), round(y * sc + cy, 1)) for (x, y), n in seen.items() if n >= 2]
+
+
+def anchor_points(walls, ac, cols=()):
     """アンカーの位置（案）：各布の芯の上に、両端から end_mm の所、間が max_spacing_mm を超えたら等間隔に足す。
-    短い布（両端の間が end_mm×2 未満）は真ん中に1本。"""
+    短い布（長さ short_mm 以下）は真ん中に1本。柱（平面詳細図）の中心から col_clear_mm 以内は避け、布に沿って
+    近い空きへずらす（柱は図面にあるので避けてよい。user 11/15）。開口などの予測はしない。"""
     pts = []
+    clear = ac.get("col_clear_mm", 0)
     for p, q in walls:
         L = abs(q[0] - p[0]) + abs(q[1] - p[1])
         if L < 1:
             continue
         ux, uy = (q[0] - p[0]) / L, (q[1] - p[1]) / L
         e = ac["end_mm"]
-        ts = [L / 2] if L < 2 * e + 1 else [e, L - e]
+        ts = [L / 2] if L <= ac["short_mm"] else [e, L - e]
         i = 0
         while i < len(ts) - 1:
             gap = ts[i + 1] - ts[i]
@@ -55,8 +75,20 @@ def anchor_points(walls, ac):
                 n = int(-(-gap // ac["max_spacing_mm"])) - 1  # 間に足す本数
                 ts[i + 1:i + 1] = [ts[i] + gap * k / (n + 1) for k in range(1, n + 1)]
             i += 1
+        def at(t):
+            return (p[0] + ux * t, p[1] + uy * t)
+        def free(t):
+            x, y = at(t)
+            return all(max(abs(x - c[0]), abs(y - c[1])) >= clear for c in cols)
         for t in ts:
-            pts.append((round(p[0] + ux * t, 1), round(p[1] + uy * t, 1)))
+            if cols and not free(t):
+                for k in range(1, 40):  # 25ずつ、近い順に両側を探す
+                    ok = [t + sg * 25 * k for sg in (1, -1) if 0 < t + sg * 25 * k < L and free(t + sg * 25 * k)]
+                    if ok:
+                        t = ok[0]
+                        break
+            x, y = at(t)
+            pts.append((round(x, 1), round(y, 1)))
     # 同じ場所（角・T で重なったもの）は1本に
     out = []
     for a in pts:
@@ -65,10 +97,10 @@ def anchor_points(walls, ac):
     return out
 
 
-def draw_anchors(walls, ac, msp, P):
+def draw_anchors(walls, ac, msp, P, cols=()):
     r = ac["radius_mm"]
     attr = {"layer": ac["layer"], "pen_color": ac["color"], "pen_style": ac["style"]}
-    pts = anchor_points(walls, ac)
+    pts = anchor_points(walls, ac, cols)
     for x, y in pts:
         msp.add_circle(P(x, y), r / S, jwwattribs=attr)
         msp.add_line(P(x - r * 1.6, y), P(x + r * 1.6, y), jwwattribs=attr)
@@ -79,6 +111,10 @@ def draw_anchors(walls, ac, msp, P):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     want_anchor = "--no-anchor" not in sys.argv  # アンカー（別レイヤ7）。既定で描く
+    plan = None
+    if "--plan" in sys.argv:
+        plan = sys.argv[sys.argv.index("--plan") + 1]
+        args = [a for a in args if a != plan]
     walls_path, out = args[0], args[1]
     cfg_path = args[2] if len(args) > 2 else str(ROOT / "05_設定" / "基礎.json")
     fc = json.load(open(cfg_path, encoding="utf-8"))
@@ -126,7 +162,9 @@ def main():
     for p, q in walls:
         line(p, q, "center")
     if want_anchor:
-        n_anchor = draw_anchors(walls, fc["anchor"], msp, P)
+        cols = read_columns(plan, walls_path.replace("_walls.json", "_meta.json")) if plan else []
+        n_anchor = draw_anchors(walls, fc["anchor"], msp, P, cols)
+        print(f"柱 {len(cols)} 本を避ける")
         print(f"アンカー: {n_anchor} 本（別レイヤ {fc['anchor']['layer']}）")
     # 寸法：下と左に、芯々の寸法。上と右に通り芯の記号
     # 通り芯＝布が通っている線（縦の布の x、横の布の y）。布の端だけの位置は通り芯にしない
