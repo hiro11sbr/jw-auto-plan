@@ -1490,22 +1490,41 @@ def kitchen_layout(k_path, cfg, walls=()):
     kp = cfg.get("kitchen_part", {})
     S = cfg["layers"]["scale"]
     board = cfg["offsets_mm"]["board_face_inside"]
-    name, ents = kp.get("block"), None
     lib_p = Path(__file__).resolve().parent.parent / kp.get("library", "").replace("\\", "/") if kp.get("library") else None
-    if name and lib_p and lib_p.is_file():
-        ents = {b["name"]: b["entities"] for b in ezjww.read_document(str(lib_p))["block_defs"]}.get(name)
-    if ents is None:
-        name, ents = "キッチン_I型_W2550", _generic_kitchen()
-    stove0, back0 = kp.get("stove", [-1, 0]), kp.get("back", [0, 1])
-    # 部品の天板の外形（長い線の範囲）
-    long_ = [e for e in ents if e["type"] == "LINE"
-             and math.hypot(e["end_x"] - e["start_x"], e["end_y"] - e["start_y"]) * S >= 500]
-    xs = [v * S for e in long_ for v in (e["start_x"], e["end_x"])]
-    ys = [v * S for e in long_ for v in (e["start_y"], e["end_y"])]
-    corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
-    depth = max(ys) - min(ys)
+    blocks = {}
+    if lib_p and lib_p.is_file():
+        blocks = {b["name"]: b["entities"] for b in ezjww.read_document(str(lib_p))["block_defs"]}
+
+    def part_for(k):
+        """型（I型・ペニンシュラ）に合う部品。I型の部品をペニンシュラに使ってはいけない（user 11/16）。
+        返す：(name, ents, stove0, back0) か None（置かない）"""
+        if k.get("kind") == "island":
+            return None
+        if k.get("kind") == "peninsula":
+            pn = kp.get("peninsula", {})
+            cand = [(abs(int(w) - k["len_mm"]), n) for w, n in pn.get("blocks", {}).items() if n in blocks]
+            if not cand:
+                print(f"キッチン（ペニンシュラ）：部品がない。I型の部品は使わないので置かない")
+                return None
+            n = min(cand)[1]
+            return n, blocks[n], pn.get("stove", [-1, 0]), pn.get("back", [0, 1])
+        n = kp.get("block")
+        if n in blocks:
+            return n, blocks[n], kp.get("stove", [-1, 0]), kp.get("back", [0, 1])
+        return "キッチン_I型_W2550", _generic_kitchen(), kp.get("stove", [-1, 0]), kp.get("back", [0, 1])
     out = []
     for k in ks:
+        pf = part_for(k)
+        if pf is None:
+            continue
+        name, ents, stove0, back0 = pf
+        # 部品の天板の外形（長い線の範囲）
+        long_ = [e for e in ents if e["type"] == "LINE"
+                 and math.hypot(e["end_x"] - e["start_x"], e["end_y"] - e["start_y"]) * S >= 500]
+        xs = [v * S for e in long_ for v in (e["start_x"], e["end_x"])]
+        ys = [v * S for e in long_ for v in (e["start_y"], e["end_y"])]
+        corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
+        depth = max(ys) - min(ys)
         best = None
         for rot in (0, 90, 180, 270):
             for sx in (1, -1):
