@@ -75,11 +75,13 @@ def detect(img, mmpp):
                 if inner.size == 0 or np.median(inner) < 150:
                     continue
                 objs = []
+                obj_depth = []  # シンク・コンロの四角の、奥行き方向の位置（0〜1）
                 for j, (x, y, w, h) in enumerate(boxes):
                     if x >= X0 and y >= Y0 and x + w <= X1 + 1 and y + h <= Y1 + 1:
                         lo, sh = max(w, h) * mmpp, min(w, h) * mmpp
                         if 400 <= lo <= 1000 and 350 <= sh <= 650 and cv2.contourArea(cs[j]) / (w * h) >= 0.75:
                             objs.append((x + w / 2) if horiz else (y + h / 2))
+                            obj_depth.append(((y + h / 2 - Y0) / max(Y1 - Y0, 1)) if horiz else ((x + w / 2 - X0) / max(X1 - X0, 1)))
                 fr = ((inner < 150).mean(0) if horiz else (inner < 150).mean(1)) > 0.6
                 m_ = np.concatenate(([0], fr.astype(int), [0]))
                 for st, en in zip(np.flatnonzero(np.diff(m_) == 1), np.flatnonzero(np.diff(m_) == -1)):
@@ -89,7 +91,12 @@ def detect(img, mmpp):
                     continue
                 mid = lambda g: (g[0] + g[1]) / 2  # noqa: E731
                 box = (s, mid(a), e, mid(b)) if horiz else (mid(a), s, mid(b), e)
-                cands.append(dict(box=box, horiz=horiz, depth=(b[0] - a[1]) * mmpp))
+                # 奥行き方向の「暗い所」の重心（0〜1、画像の上／左が0）。ペニンシュラの作業する側を決める
+                prof = (inner < 150).mean(1 if horiz else 0)
+                cen = float((prof * np.arange(len(prof))).sum() / max(prof.sum(), 1e-9) / max(len(prof) - 1, 1))
+                if obj_depth:
+                    cen = float(np.median(obj_depth))  # シンク・コンロの四角があれば、それの位置を使う
+                cands.append(dict(box=box, horiz=horiz, depth=(b[0] - a[1]) * mmpp, work_cen=cen))
     # 重なる候補は、奥行きの浅い方だけ
     cands.sort(key=lambda c: c["depth"])
     out = []
@@ -116,6 +123,13 @@ def main():
             walls.append((True, y1, min(x1, x2), max(x1, x2)))
         elif abs(x1 - x2) < 1:
             walls.append((False, x1, min(y1, y2), max(y1, y2)))
+    # 腰壁（キッチンの前の腰壁など）も、長い辺の側の「壁」として使う。I型とペニンシュラの見分けに必要
+    # （プラン2：腰壁は壁の一覧になく、腰壁の一覧にだけあった、11/16）
+    kp_ = Path(f"{pre}_腰壁.json")
+    koshi = []
+    if kp_.exists():
+        for e in json.load(open(kp_, encoding="utf-8")):
+            koshi.append((bool(e["horizontal"]), e["line_mm"], min(e["a_mm"], e["b_mm"]), max(e["a_mm"], e["b_mm"])))
     found, v = detect(img, mmpp)
     out = []
     for c in found:
@@ -147,7 +161,7 @@ def main():
 
         def side_wall(u_edge, sg):
             """長い辺の外（sg の向き）で、いちばん近い平行な壁芯（天板の長さの 30% 以上重なる）"""
-            c_ = [(ln, a, b) for hh, ln, a, b in walls if hh == h and (ln - u_edge) * sg >= -60
+            c_ = [(ln, a, b) for hh, ln, a, b in walls + koshi if hh == h and (ln - u_edge) * sg >= -60
                   and min(b, tb) - max(a, ta) >= 0.3 * (tb - ta)]
             return min((abs(ln - u_edge) for ln, a, b in c_), default=None), \
                 min(c_, key=lambda q: abs(q[0] - u_edge))[0] if c_ else None
@@ -155,15 +169,30 @@ def main():
         d_hi, w_hi = side_wall(ub, 1)
         INF = 1e9
         dl, dh = (d_lo if d_lo is not None else INF), (d_hi if d_hi is not None else INF)
+        n_end = sum(1 for s_ in (-1, 1) if ew[s_] is not None)
         if min(dl, dh) <= 350:
+            # I型：長い辺の一方が壁（腰壁）に接する。背中＝壁の側
+            kind = "I"
             bs = -1 if dl <= dh else 1
+        elif n_end == 0:
+            # アイランド：4面とも壁に接しない（見本がない。置かない、user 11/16）
+            print(f"キッチン {'横' if h else '縦'} ({xa:.0f},{ya:.0f})-({xb:.0f},{yb:.0f})：4面とも壁に接しない（アイランド）。置かない")
+            out.append({"box_mm": [round(xa, 1), round(ya, 1), round(xb, 1), round(yb, 1)], "horizontal": h, "kind": "island",
+                        "len_mm": round(tb - ta), "depth_mm": round(ub - ua)})
+            continue
         else:
-            bs = -1 if dl >= dh else 1
-        back_wall = (w_lo if bs < 0 else w_hi) if min(dl, dh) <= 350 else None
-        front = ub if bs < 0 else ua
+            # ペニンシュラ：前面に壁も腰壁もなく、短い辺の一方だけが壁に接する。作業する側（シンク・コンロの側）は
+            # 奥行き方向の暗い所の重心が寄っている側。背中＝その反対のフラットカウンター側
+            kind = "peninsula"
+            cen = c["work_cen"]
+            # 横：画像の上＝mm の +y。縦：画像の左＝mm の -x
+            work_sgn = (1 if cen < 0.5 else -1) if h else (-1 if cen < 0.5 else 1)
+            bs = -work_sgn
+        back_wall = (w_lo if bs < 0 else w_hi) if kind == "I" else None
+        front = ub if bs < 0 else ua  # 背中の反対側の天板の端＝作業する側の端
         stove = [ss, 0] if h else [0, ss]
         back = [0, bs] if h else [bs, 0]
-        item = {"box_mm": [round(xa, 1), round(ya, 1), round(xb, 1), round(yb, 1)], "horizontal": h,
+        item = {"kind": kind, "box_mm": [round(xa, 1), round(ya, 1), round(xb, 1), round(yb, 1)], "horizontal": h,
                 "stove": stove, "back": back, "len_mm": round(tb - ta), "depth_mm": round(ub - ua),
                 "front_mm": round(front, 1), "stove_face_mm": round(stove_face, 1),
                 "back_wall_mm": back_wall, "why_stove": why}
