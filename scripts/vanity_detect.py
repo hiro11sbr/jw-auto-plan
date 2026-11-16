@@ -81,6 +81,22 @@ def detect(img, mmpp, regions):
             if any(abs(o["box"][0] - x0_) < 4 and abs(o["box"][1] - y0_) < 4 for o in out):
                 continue
             out.append(dict(box=(x0_, y0_, x1_, y1_), L=L, S=S, horiz=w >= h))
+    # 部屋の名前のない所（ホール・LDK の一角など）の洗面台（プラン2・4 1F）：外形の線が薄い（灰色）ので、
+    # 線のしきい値をゆるめ、とても明るく（平均 235 以上）、間口 1000 以上の長方形だけを受ける。壁に沿う確認は呼び出し側
+    dk2 = (v < 200).astype(np.uint8)
+    cs2, hier2 = cv2.findContours(dk2, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    for k, c in enumerate(cs2):
+        if hier2[0][k][3] < 0:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        L, S = max(w, h) * mmpp, min(w, h) * mmpp
+        if not (1000 <= L <= 1700 and 430 <= S <= 640 and L / S >= 1.15):
+            continue
+        if cv2.contourArea(c) / (w * h) < 0.5 or v[y + 2:y + h - 2, x + 2:x + w - 2].mean() < 235:
+            continue
+        if any(abs(o["box"][0] - x) < 6 and abs(o["box"][1] - y) < 6 for o in out):
+            continue
+        out.append(dict(box=(x, y, x + w, y + h), L=L, S=S, horiz=w >= h))
     return out
 
 

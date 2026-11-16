@@ -1577,6 +1577,10 @@ def vanity_layout(v_path, cfg):
     out = []
     for v in vs:
         want = v["width_mm"]
+        if want <= 800:
+            # 間口 750 以下は洗面台でなくスロップシンク（ランドリー・家事室）の可能性が高い（user 11/17）。洗面台は置かない
+            print(f"洗面台 間口{want:.0f}：750 以下なので置かない（スロップシンクの可能性）")
+            continue
         cand = [(abs(int(w) - want), int(w), n) for w, n in vp.get("blocks", {}).items() if n in blocks]
         if cand and min(cand)[0] <= 150:
             _d, wsel, name = min(cand)
