@@ -30,6 +30,7 @@ def detect(img, mmpp, regions):
     v = img.astype(int).mean(2)
     dark = (v < 140).astype(np.uint8)
     cs, hier = cv2.findContours(dark, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    boxes = [cv2.boundingRect(c) for c in cs]
     out = []
     for r in regions:
         if not any(any(k in n for k in NAMES) for n in r["names"]) or r["area_m2"] > 12:
@@ -42,8 +43,17 @@ def detect(img, mmpp, regions):
             x, y, w, h = cv2.boundingRect(c)
             if not (x0 - 5 <= x and y0 - 5 <= y and x + w <= x1 + 5 and y + h <= y1 + 5):
                 continue
-            if max(w, h) * mmpp > 1700 or min(w, h) * mmpp < 100 or cv2.contourArea(c) / (w * h) < 0.85:
+            if max(w, h) * mmpp > 1700 or min(w, h) * mmpp < 100:
                 continue
+            fill = cv2.contourArea(c) / (w * h)
+            if fill < 0.85:
+                # 洗面ボールの線が内側に入って塗りが減った四角（プラン6 1F）：中に洗面ボールの大きさの線のかたまりがあれば受ける
+                bowl = fill >= 0.5 and max(w, h) * mmpp >= 550 and any(
+                    j != k and x < bx0 and y < by0 and bx0 + bw < x + w and by0 + bh < y + h
+                    and 250 <= max(bw, bh) * mmpp <= 650 and 200 <= min(bw, bh) * mmpp
+                    for j, (bx0, by0, bw, bh) in enumerate(boxes))
+                if not bowl:
+                    continue
             if v[y + 2:y + h - 2, x + 2:x + w - 2].mean() < 190:
                 continue  # 灰色の塗り（洗濯機・冷蔵庫など）
             parts.append([x, y, x + w, y + h])
