@@ -175,14 +175,17 @@ def main():
         ya, yb = sorted((M.ymm(Y0), M.ymm(Y1)))
         cxm, cym = (xa + xb) / 2, (ya + yb) / 2
 
-        def wall_line(h, edge, sgn, mid):
-            """UB の辺の外（sgn の向き）で、いちばん近い壁芯（300mm 以内、UB の真ん中を通る壁）"""
-            c_ = [ln for hh, ln, a, b in walls if hh == h and a - 1 <= mid <= b + 1 and 0 <= (ln - edge) * sgn <= 300]
+        def wall_line(h, edge, sgn, lo, hi):
+            """UB の辺の外（sgn の向き）で、いちばん近い壁芯（300mm 以内）。辺の範囲 lo〜hi と 300mm 以上重なる壁。
+            （ドアの所で壁が途切れていても、その両側の壁を使う。プラン6 1F で、真ん中がドアの隙間に入って
+            壁が見つからなかった、11/16）"""
+            c_ = [ln for hh, ln, a, b in walls if hh == h and min(b, hi) - max(a, lo) >= 300
+                  and 0 <= (ln - edge) * sgn <= 300]
             return min(c_, key=lambda ln: abs(ln - edge)) if c_ else None
-        L_ = wall_line(False, xa, -1, cym)
-        R_ = wall_line(False, xb, 1, cym)
-        B_ = wall_line(True, ya, -1, cxm)
-        T_ = wall_line(True, yb, 1, cxm)
+        L_ = wall_line(False, xa, -1, ya, yb)
+        R_ = wall_line(False, xb, 1, ya, yb)
+        B_ = wall_line(True, ya, -1, xa, xb)
+        T_ = wall_line(True, yb, 1, xa, xb)
         cx_ = (L_ + R_) / 2 if L_ is not None and R_ is not None else cxm
         cy_ = (B_ + T_) / 2 if B_ is not None and T_ is not None else cym
         tub = to_mm_dir((-r["sep"][0], -r["sep"][1]))
