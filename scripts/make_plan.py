@@ -1586,12 +1586,9 @@ def vanity_layout(v_path, cfg):
             _d, wsel, name = min(cand)
             ents = blocks[name]
         else:
-            wsel, name = int(round(want / 50.0) * 50), f"洗面台_W{int(round(want / 50.0) * 50)}"
-            ents = [{"type": "LINE", "start_x": a / 50.0, "start_y": b / 50.0, "end_x": c / 50.0, "end_y": d / 50.0,
-                     "base": {"pen_color": 1, "pen_style": 1}}
-                    for a, b, c, d in ((0, 0, wsel, 0), (wsel, 0, wsel, 550), (wsel, 550, 0, 550), (0, 550, 0, 0))]
-            if cand:
-                print(f"洗面台 間口{want}：近い部品がない（最も近い {min(cand)[1]}）。簡単な形で置く")
+            # 近い部品がなければ書かない（user 11/17）
+            print(f"洗面台 間口{want:.0f}：近い部品がない。置かない")
+            continue
         xs = [val * S for e in ents if e["type"] == "LINE" for val in (e["start_x"], e["end_x"])]
         ys = [val * S for e in ents if e["type"] == "LINE" for val in (e["start_y"], e["end_y"])]
         corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
