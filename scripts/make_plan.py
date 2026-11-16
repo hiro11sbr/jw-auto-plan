@@ -1395,7 +1395,9 @@ def ub_layout(ub_path, cfg):
     for u in ubs:
         door = u.get("door")
         kind = "facing" if door and door[0] == -u["tub"][0] and door[1] == -u["tub"][1] else "beside"
-        spec_ = {**canon[kind], **up.get(kind, {})}
+        # 大きさ：内側の長い辺が 1950 以上なら 1621（壁芯 2275×1820）、それ以外は 1616（11/16）
+        size = "1621" if max(u.get("inner_mm", [0, 0])) >= 1950 else "1616"
+        spec_ = {**canon[kind], **up.get(kind, {}), **up.get("sizes", {}).get(size, {}).get(kind, {})}
         name = spec_.get("block")
         ents = blocks.get(name) if name else None
         if ents is None:
@@ -1533,6 +1535,62 @@ def kitchen_layout(k_path, cfg, walls=()):
         out.append({"block": name, "ents": ents, "pos": pos, "rot": rot, "sx": sx, "sy": 1, "kind": "kitchen"})
         print(f"キッチンの部品: {name} {'横' if h else '縦'} コンロ{tuple(k['stove'])} 背中{tuple(k['back'])}"
               f" 回転{rot} 裏返し{'あり' if sx < 0 else 'なし'}（奥行き{depth:.0f}、元の図の天板 {k['depth_mm']}）")
+    return out
+
+
+def vanity_layout(v_path, cfg):
+    """読み取った洗面台（<階>_洗面.json）に、洗面化粧台の部品を置く（user 11/16）。元の図の間口にいちばん近い
+    部品（150mm 以内）を、背中を壁の面（石膏ボードの面）に付け、間口の真ん中を元の図の洗面台の真ん中に
+    そろえる。部品がなければ（配布用）簡単な形（外形と洗面ボール）。部品は壁が上（+y）、間口が x。
+    返す：[{block, ents, pos, rot, sx, sy, kind}]"""
+    if not Path(v_path).exists():
+        return []
+    vs = json.load(open(v_path, encoding="utf-8"))
+    if not vs:
+        return []
+    vp = cfg.get("vanity_part", {})
+    S = cfg["layers"]["scale"]
+    board = cfg["offsets_mm"]["board_face_inside"]
+    lib_p = Path(__file__).resolve().parent.parent / vp.get("library", "").replace("\\", "/") if vp.get("library") else None
+    blocks = {}
+    if lib_p and lib_p.is_file():
+        blocks = {b["name"]: b["entities"] for b in ezjww.read_document(str(lib_p))["block_defs"]}
+    out = []
+    for v in vs:
+        want = v["width_mm"]
+        cand = [(abs(int(w) - want), int(w), n) for w, n in vp.get("blocks", {}).items() if n in blocks]
+        if cand and min(cand)[0] <= 150:
+            _d, wsel, name = min(cand)
+            ents = blocks[name]
+        else:
+            wsel, name = int(round(want / 50.0) * 50), f"洗面台_W{int(round(want / 50.0) * 50)}"
+            ents = [{"type": "LINE", "start_x": a / 50.0, "start_y": b / 50.0, "end_x": c / 50.0, "end_y": d / 50.0,
+                     "base": {"pen_color": 1, "pen_style": 1}}
+                    for a, b, c, d in ((0, 0, wsel, 0), (wsel, 0, wsel, 550), (wsel, 550, 0, 550), (0, 550, 0, 0))]
+            if cand:
+                print(f"洗面台 間口{want}：近い部品がない（最も近い {min(cand)[1]}）。簡単な形で置く")
+        xs = [val * S for e in ents if e["type"] == "LINE" for val in (e["start_x"], e["end_x"])]
+        ys = [val * S for e in ents if e["type"] == "LINE" for val in (e["start_y"], e["end_y"])]
+        corners = [(x, y) for x in (min(xs), max(xs)) for y in (min(ys), max(ys))]
+        best = None
+        for rot in (0, 90, 180, 270):
+            a = math.radians(rot)
+            if (round(-math.sin(a)), round(math.cos(a))) == tuple(v["back"]) and best is None:
+                best = rot
+        rot = best
+        a = math.radians(rot)
+        tc = [(x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a)) for x, y in corners]
+        h = v["horizontal"]
+        ti, ui = (0, 1) if h else (1, 0)
+        t_mid = (min(p[ti] for p in tc) + max(p[ti] for p in tc)) / 2
+        u_lo, u_hi = min(p[ui] for p in tc), max(p[ui] for p in tc)
+        bs = v["back"][ui]
+        dt = v["centre_mm"][0 if h else 1] - t_mid
+        back_face = v["back_wall_mm"] - bs * board
+        du = back_face - (u_hi if bs > 0 else u_lo)
+        pos = (dt, du) if h else (du, dt)
+        out.append({"block": name, "ents": ents, "pos": pos, "rot": rot, "sx": 1, "sy": 1, "kind": "vanity"})
+        print(f"洗面台の部品: {name} {'横' if h else '縦'} 背中{tuple(v['back'])} 回転{rot}（元の図 間口{want}×奥行き{v['depth_mm']}）")
     return out
 
 
@@ -2952,14 +3010,16 @@ def main():
     toilets = json.load(open(toilet_path, encoding="utf-8")) if Path(toilet_path).exists() else []
     # キッチン：読み取った位置・向きに部品を置く（家具・設備のレイヤー。UB と同じ描き方、user 11/16）
     kitchens = kitchen_layout(walls_path.replace("_walls.json", "_キッチン.json"), cfg, walls)
-    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets, list(ubs) + kitchens)
+    vanities = vanity_layout(walls_path.replace("_walls.json", "_洗面.json"), cfg)
+    write_jww(prefix + ".jww", walls, offsets, cols, cfg, center, placements, lib, extras, toilets, list(ubs) + kitchens + vanities)
     # model mm = paper mm * scale + center; score_walls.py needs this to read corrected drawings back
     json.dump({"center_mm": center, "scale": cfg["layers"]["scale"],
                "placements": [{**{k: pl[k] for k in ("block", "word", "kind", "pos", "rot", "sx", "sy", "width", "horizontal", "line")}, "label": pl.get("label")}
                               for pl in placements],  # 建具の置き方（部品の差し替え用）
                "ub": [{k: u[k] for k in ("block", "kind", "pos", "rot", "sx", "sy")} for u in ubs],
                "ub_openings": [{k: c[k] for k in ("horizontal", "line", "span")} for c in ub_cuts],
-               "kitchen": [{k: u[k] for k in ("block", "pos", "rot", "sx", "sy")} for u in kitchens]},
+               "kitchen": [{k: u[k] for k in ("block", "pos", "rot", "sx", "sy")} for u in kitchens],
+               "vanity": [{k: u[k] for k in ("block", "pos", "rot", "sx", "sy")} for u in vanities]},
               open(prefix + "_meta.json", "w", encoding="utf-8"))
     # 建具の枠に入り込んだ紫線・壁の線を切る（検査 C・D と同じ箱で。入隅すぐ脇の窓の枠に外壁の面が当たる等、11/13）
     import fix_fittings
