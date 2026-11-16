@@ -209,6 +209,9 @@ def main():
                 hinge = M.ymm(hg)
                 line = R_ if dd[0] > 0 else L_
                 mid_, c0 = (a_ + b_) / 2, cy_
+            if line is None:
+                # 壁が見つからないと、ドアの開口を切れず、UB の位置も内側の真ん中になる。黙って流さない（プラン6 1F、11/16）
+                print(f"UB @({cx_:.0f},{cy_:.0f})：ドアの側の壁（UB の辺から 300mm 以内）が見つからない。ドアの開口は切れない")
             sgn = 1 if mid_ >= c0 else -1
             item.update({"door": list(dd), "door_end": [sgn, 0] if h else [0, sgn], "door_horizontal": h,
                          "door_line_mm": line, "door_span_mm": [round(a_, 1), round(b_, 1)],
