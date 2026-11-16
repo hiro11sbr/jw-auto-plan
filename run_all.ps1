@@ -79,8 +79,11 @@ foreach ($fl in $floors) {
     & $py -3.13 -I "$d\scripts\ub_detect.py" $img[$fl] "$mid\$fl" $cfg | Select-Object -Last 1
     # 3f. キッチン（天板の位置・コンロの側・背中の側）。make_plan がキッチンの部品を置く（11/16）
     & $py -3.13 -I "$d\scripts\kitchen_detect.py" $img[$fl] "$mid\$fl" $cfg | Select-Object -Last 1
+    # （洗面台の読み取り vanity_detect は区画（regions_check の結果）を使うので、下の 4. の後に走らせる）
     # 4. 区画の確認（確かめ専用）。文字を消した画像を使う。印を付けるだけで、壁・建具の結果も図面も変えない
     & $py -3.13 -I "$d\scripts\regions_check.py" $img[$fl] $clean "$mid\${fl}_walls.json" "$mid\${fl}_openings.json" "$mid\${fl}_部屋名.json" $names $cfg "$mid\$fl"
+    # 4b. 洗面台（洗面・脱衣・ランドリーの区画の中の、明るい長方形。間口・背中の壁）。make_plan が洗面化粧台の部品を置く（11/16）
+    & $py -3.13 -I "$d\scripts\vanity_detect.py" $img[$fl] "$mid\$fl" $cfg | Select-Object -Last 1
     # 5. 読み取りの検査：元の画像と、読み取った壁・建具・部屋を突き合わせ、読み違いの疑いを出す。確実なもの
     #    （室内の壁の窓 → ドア）は中間データで直し、直したら室内建具の種類分けをやり直す（11/15）
     #    結果は 中間\<階>_読み取りの検査.json と 出力\<階>_読み取りの検査.png（疑いの所に印）

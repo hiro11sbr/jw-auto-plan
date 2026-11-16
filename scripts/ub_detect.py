@@ -86,7 +86,9 @@ def detect(img, mmpp):
             ub = (x, y, x + w + t_wall, y + h)
         else:
             ub = (x - t_wall, y, x + w, y + h)
-        if not (1400 <= (ub[2] - ub[0]) * mmpp <= 1900 and 1400 <= (ub[3] - ub[1]) * mmpp <= 1900):
+        # 内側の大きさ：1616 は 1400〜1900 角、1621（壁芯 2275×1820）は長い辺が 2400 まで（11/16）
+        ew_, eh_ = (ub[2] - ub[0]) * mmpp, (ub[3] - ub[1]) * mmpp
+        if not (1400 <= min(ew_, eh_) <= 1900 and max(ew_, eh_) <= 2400):
             continue
         # 浴槽の丸い側：外の線が真ん中でふくらむ端
         j = max(tubs, key=lambda j: boxes[j][2] * boxes[j][3])
