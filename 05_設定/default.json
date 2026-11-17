@@ -303,7 +303,7 @@
     "kamachi_min_full_lines": 2,
     "kamachi_pocket_min_full_lines": 1,
     "_kamachi_label_names": "框を探す部屋の名前：玄関と、玄関から続く土間（SIC など。プラン6 1F の SIC は「土間」と読まれる。user 11/17）",
-    "kamachi_label_names": ["玄関", "土間", "SIC", "シューズクローク", "シューズクローゼット"]
+    "kamachi_label_names": ["玄関", "土間", "土間収納", "SIC", "シューズクローク", "シューズクローゼット", "ファミリー玄関", "ファミリ玄関", "F玄関", "家族玄関"]
   },
   "dimensions": {
     "_comment": "寸法線：長い細い黒線と、そこから壁へ伸びる引出線（目盛り）。寸法は必ず建物の最外周まで振ってある（2026-10-24）",
