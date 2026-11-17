@@ -423,6 +423,13 @@ def classify(edges, cfg):
         # a weak fitting edge next to a fitting, whose other end meets a wall (in line or
         # crossing), is part of that fitting: a storage front whose frame lines are partly
         # hidden by its label (e.g. 06823) or JPEG
+        def text_gap(e, beyond):
+            # one edge read wholly as lettering (a 引戸's dashed pocket lines, プラン6 1F ゲストルーム) between a
+            # clear fitting and a wall on the same line: the fitting runs on to that wall (user 11/17)
+            return bool(e and e["cls"] == "none" and not e.get("stair")
+                        and e["f"].get("text", 0) >= g.get("fitting_text_only_frac", 0.9)
+                        and beyond and beyond["cls"] == "wall")
+
         def growable(e, first):
             if not e or e["cls"] != "none" or e.get("stair"):
                 return False
@@ -438,12 +445,14 @@ def classify(edges, cfg):
         for st, nb in list(row.items()):
             # the fitting grown from must be a clear one: stair lines next to a stair spine are
             # only half-fitting-like (2F, 0.44-0.61) and must not grow into a wall
-            if nb["cls"] != "fit" or nb["f"]["fit"] < g["fitting_strong_frac"]:
+            if nb["cls"] != "fit":
                 continue
+            strong = nb["f"]["fit"] >= g["fitting_strong_frac"]
             for d in (1, -1):
                 path = []
                 t = st + d
-                while len(path) < g["fitting_grow_max_edges"] and growable(row.get(t), not path):
+                while len(path) < g["fitting_grow_max_edges"] and (
+                        (strong and growable(row.get(t), not path)) or (not path and text_gap(row.get(t), row.get(t + d)))):
                     path.append(t)
                     node = t + 1 if d == 1 else t  # grid node at the far end of edge t
                     if row.get(t + d, {}).get("cls") in ("wall", "koshi") or crossing_wall(h, ln, node):
@@ -469,6 +478,22 @@ def classify(edges, cfg):
                 for t in steps[i:j + 1]:
                     row[t]["cls"] = "fit"
             i = j + 1
+
+    def hidden_end(h, ln, node):
+        """The edge of a crossing wall at grid point (node, ln) that is hidden by lettering (some wall /
+        fitting band, lettering over it) and has a real wall right beyond it; else None."""
+        row_p = lines.get((not h, node), {})
+        for s in perp_steps(ln):
+            e_ = row_p.get(s)
+            if not e_ or e_["cls"] != "none" or e_.get("stair"):
+                continue
+            f_ = e_["f"]
+            if f_["int"] + f_["fit"] < g.get("hidden_wall_min_frac", 0.3) or f_.get("text", 0) < g.get("hidden_wall_min_text", 0.3):
+                continue
+            beyond = s - 1 if abs(s + 1 - ln) < 1e-6 else s + 1
+            if row_p.get(beyond, {}).get("cls") == "wall":
+                return e_
+        return None
 
     solid = ("wall", "wall_fit")
     # pass 1: fittings between solid walls; pass 2: also fittings that end on another fitting
@@ -498,7 +523,22 @@ def classify(edges, cfg):
                            or row[steps[i]]["node_gray"][0] >= ng_min)
                 right_ok = ((right and right["cls"] in support) or crossing_wall(h, ln, steps[j] + 1)
                             or row[steps[j]]["node_gray"][1] >= ng_min)
+                # a fitting (closet front) may end where a crossing wall is hidden under lettering for one
+                # edge and shows again just beyond (プラン6 1F クローゼット：右の壁が「クローゼット」の文字の下
+                # で切れ、455 だけの出っ張りになった。user 11/17)
+                hid = []
+                if not left_ok:
+                    e_ = hidden_end(h, ln, steps[i])
+                    left_ok = e_ is not None
+                    hid += [e_] if e_ else []
+                if not right_ok:
+                    e_ = hidden_end(h, ln, steps[j] + 1)
+                    right_ok = e_ is not None
+                    hid += [e_] if e_ else []
                 ok = left_ok and right_ok and j - i + 1 <= maxrun
+                if ok:
+                    for e_ in hid:
+                        e_["cls"], e_["ext"], e_["completed"] = "wall_fit", False, True
                 ext = bool(left and left["cls"] == "wall" and left["ext"] and right and right["cls"] == "wall"
                            and right["ext"])
                 for t in steps[i:j + 1]:

@@ -304,6 +304,23 @@ def detect(img, cfg, det):
                     # centre: the dashed leaf sits on the face, a frame line may sit on the centre)
                     o_star = max((o_ for o_ in ext if ext[o_][k_] >= 0.9 * best_), key=abs)
                     pocket_face = (1 if o_star > 0 else -1) if abs(o_star) >= 1 else None
+                    if any(o_ == -o_star for o_ in ext if ext[o_][k_] >= 0.9 * best_):
+                        # 中心をはさんで同じ長さの線が両側にある（プラン6 1F トイレ）：戸袋の所で、とぎれとぎれの線（点線の
+                        # 戸）の側を引き込み面にする。切れ目のない線は壁の面の線（user 11/17）
+                        rng = range(p0 - before, p0) if pocket == "before" else range(p1 + 1, p1 + after + 1)
+                        cc = int(round(c))
+                        cov = {}
+                        for o_ in (o_star, -o_star):
+                            n_ = 0
+                            for q in rng:
+                                yy, xx = (cc + o_, q) if h else (q, cc + o_)
+                                if 0 <= yy < img_dark.shape[0] and 0 <= xx < img_dark.shape[1]:
+                                    n_ += int(img_dark[yy, xx])
+                            cov[o_] = n_ / max(1, len(rng))
+                        dashed = [o_ for o_ in cov if 0.2 <= cov[o_] <= 0.8]
+                        solid_ = [o_ for o_ in cov if cov[o_] > 0.8]
+                        if len(dashed) == 1 and len(solid_) == 1:
+                            pocket_face = 1 if dashed[0] > 0 else -1
                     # アウトセット片引戸：戸袋の側の壁が薄くなっていない（帯の太さが壁のまま）。ふつうの
                     # 片引戸は戸袋の所で壁の帯が半分ほどに細い（user 11/14、プラン5 2F：15px と 1〜6px）
                     pk_pos = [q for q in (range(p0 - before + 3, p0 - 3) if pocket == "before" else range(p1 + 4, p1 + after - 2))

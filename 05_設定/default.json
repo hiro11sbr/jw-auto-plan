@@ -282,6 +282,8 @@
     "fold_min_each": 2,
     "fold_min_total": 10,
     "fold_pair_min_mm": 910,
+    "_fold_half_arc_max": "線の少ない折戸（左右の斜線が2本ずつ程度）：両開きの半円弧がこれ以下で、片開きの円弧もない時は折戸（プラン6 1F 階段下物入 0.47・WIC 0.27、両開きは 0.93〜1.0。user 11/17）",
+    "fold_half_arc_max": 0.55,
     "leg_from_frame_px": 14,
     "_double_arc": "両開き＝両方の枠から幅の半分の円弧（両開きは0.87〜1.0、折戸のV字は0.53以下）",
     "double_arc_min": 0.8,
@@ -298,7 +300,10 @@
       "joinery"
     ],
     "kamachi_reach_mm": 3000,
-    "kamachi_min_full_lines": 2
+    "kamachi_min_full_lines": 2,
+    "kamachi_pocket_min_full_lines": 1,
+    "_kamachi_label_names": "框を探す部屋の名前：玄関と、玄関から続く土間（SIC など。プラン6 1F の SIC は「土間」と読まれる。user 11/17）",
+    "kamachi_label_names": ["玄関", "土間", "SIC", "シューズクローク", "シューズクローゼット"]
   },
   "dimensions": {
     "_comment": "寸法線：長い細い黒線と、そこから壁へ伸びる引出線（目盛り）。寸法は必ず建物の最外周まで振ってある（2026-10-24）",
