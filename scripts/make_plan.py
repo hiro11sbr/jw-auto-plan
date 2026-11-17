@@ -1120,12 +1120,22 @@ def porch_walls(walls, fp):
             attach = round(attach / 227.5) * 227.5  # back to the wall-centre crossing
             mid = (attach + free) / 2
 
-            def faces_building(s, w=w, mid=mid):
-                ray = (LineString([(mid, w.c + s * 200), (mid, w.c + s * 6000)]) if w.h else
-                       LineString([(w.c + s * 200, mid), (w.c + s * 6000, mid)]))
+            def faces_building(s, t=None, w=w, mid=mid):
+                t = mid if t is None else t
+                ray = (LineString([(t, w.c + s * 200), (t, w.c + s * 6000)]) if w.h else
+                       LineString([(w.c + s * 200, t), (w.c + s * 6000, t)]))
                 return ray.intersects(fp)
 
-            out.append((w.h, w.c, attach, free, 1 if faces_building(1) else -1))
+            side = None
+            # the porch side is the side that faces the building: ask at the wall's middle, and when that
+            # lies past the building's edge (プラン6 1F: the 玄関 porch wall runs on beyond the top
+            # of the building, so neither side's ray reached it) just inside the attached end
+            for t_ in (mid, attach + (-100 if free > attach else 100)):
+                a_, b_ = faces_building(1, t_), faces_building(-1, t_)
+                if a_ != b_:
+                    side = 1 if a_ else -1
+                    break
+            out.append((w.h, w.c, attach, free, side if side is not None else (1 if faces_building(1) else -1)))
     return out
 
 
