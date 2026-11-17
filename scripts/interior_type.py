@@ -65,6 +65,25 @@ def diagonals(dark, o, ic):
     return pos, neg, where
 
 
+def v_pair(dark, dark_strict, o, ic):
+    """A 折戸 drawn with few lines (プラン6 1F 階段下物入・WIC: 2-3 straight pieces each way, so the
+    swing/storage count of 10 was not reached and the V was read as a swing arc / 両開き): diagonals
+    leaning both ways, and neither the two half arcs of a 両開き (0.93-1.0) nor one full-width
+    swing arc (0.8 and up) drawn (user 11/17)."""
+    pos, neg, where = diagonals(dark, o, ic)
+    # wider than any swing door: a V at each jamb (closet 4枚折れ戸, プラン6 1F クローゼット 1/4). Its
+    # V legs also fill a full-width arc; what tells it is legs that start at the frame (2 there,
+    # none on プラン4 2F's W1229 swing door) and no confirmed 両開き half arcs
+    wide = o["width_mm"] > ic["swing_max_mm"]
+    if min(pos, neg) < (1 if wide else ic["fold_min_each"]) or (wide and pos + neg < 4):
+        return False
+    half, _s = half_arcs(dark_strict, o)
+    if wide:
+        return sum(1 for _t, s in where if s) >= 2 and half < ic["double_arc_confirm"]
+    fa, _h, _s2 = full_arc(dark_strict, o)
+    return half <= ic["fold_half_arc_max"] and fa < ic["swing_arc_over_fold"]
+
+
 def quarter_arc(dark, o, hinge_t, toward, side, r):
     """Share of a quarter circle (radius r, hinge on the wall at hinge_t) that is drawn."""
     c0, h = o["px"][2], o["horizontal"]
@@ -149,6 +168,22 @@ def half_arcs(dark, o):
         if min(a, b) > best[0]:
             best = (min(a, b), side)
     return best
+
+
+def gap_only(o, M):
+    """The opening without its pocket (the wall gap only), for a sliding_pocket."""
+    gp = o.get("gap_pocket_px")
+    if not gp or not o.get("pocket"):
+        return o
+    p0, p1, c = o["px"]
+    q0, q1 = (p0, p0 + gp[0] - 1) if o["pocket"] == "after" else (p1 - gp[0] + 1, p1)
+    if o["horizontal"]:
+        a, b = sorted((M.xmm(q0), M.xmm(q1)))
+        p1m, p2m = [a, o["p1_mm"][1]], [b, o["p1_mm"][1]]
+    else:
+        a, b = sorted((M.ymm(q0), M.ymm(q1)))
+        p1m, p2m = [o["p1_mm"][0], a], [o["p1_mm"][0], b]
+    return {**o, "px": [q0, q1, c], "p1_mm": p1m, "p2_mm": p2m, "width_mm": b - a}
 
 
 def cut_wall(det, o, half, jamb):
@@ -244,17 +279,30 @@ def main():
     ops = json.load(open(ops_path, encoding="utf-8"))
     det = json.load(open(walls_path, encoding="utf-8"))
     M = Mapper(det, cfg["input"]["grid_mm"])
-    labels = [n for n in json.load(open(names_path, encoding="utf-8")) if n.get("name") == "玄関"]
+    # 玄関と、玄関から続く土間（SIC など）の名前。土間の側から見える框もある（プラン6 1F：SIC の框は、
+    # 玄関の名前からだと袖壁に隠れた。user 11/17）
+    genkan_names = ic.get("kamachi_label_names", ["玄関"])
+    labels = [n for n in json.load(open(names_path, encoding="utf-8")) if n.get("name") in genkan_names]
     walls = [LineString([w["p1"], w["p2"]]) for w in det["walls"]]
     cut = False
     for i, o in enumerate(ops):
         if o.get("rejected") or o["wall_type"] == "exterior":
             continue
-        if labels and o["kind"] in ic["kamachi_kinds"] and o.get("arc", 0) < cfg["opening_detection"]["arc_min"] \
-                and seen_from_genkan(o, labels, walls, M, ic["kamachi_reach_mm"]):
-            _fan, stagger, full, _span = cues(dark, int(o["px"][0]), int(o["px"][1]), float(o["px"][2]),
-                                              o["horizontal"], 0, cfg["window_type"])
-            if stagger == 0 and full >= ic["kamachi_min_full_lines"]:
+        # （片引戸は、アウトセットと読んだものだけ：框の帯は隣の壁の面の上まで続き、壁が細くならない。ふつうの
+        # 片引戸は戸袋の所で壁が細い。プラン3・4・5 1F の玄関近くの片引戸を框にしてしまった。user 11/17）
+        og = gap_only(o, M) if o["kind"] == "sliding_pocket" and o.get("outset") else o
+        if labels and o["kind"] in list(ic["kamachi_kinds"]) + (["sliding_pocket"] if ic.get("kamachi_pocket", True) and o.get("outset") else []) \
+                and o.get("arc", 0) < cfg["opening_detection"]["arc_min"] \
+                and seen_from_genkan(og, labels, walls, M, ic["kamachi_reach_mm"]):
+            # 片引戸と読んだ框（プラン6 1F SIC）：框の白い帯が隣の壁の上まで続き、引き込みに見えた。
+            # 確かめるのは壁の切れ目（引き込みを除いた所）だけ。線は1本でよい（帯の片側が壁の線と重なる）
+            _fan, stagger, full, _span = cues(dark, int(og["px"][0]), int(og["px"][1]), float(og["px"][2]),
+                                              og["horizontal"], 0, cfg["window_type"])
+            need = ic["kamachi_min_full_lines"] if og is o else ic["kamachi_pocket_min_full_lines"]
+            if stagger == 0 and full >= need:
+                if og is not o:
+                    o.update({k: og[k] for k in ("px", "p1_mm", "p2_mm", "width_mm")})
+                    o["pocket"], o["outset"] = None, False
                 o["kind_before"] = o["kind"]
                 o["kind"] = "kamachi"
                 o["rejected"] = "框（上がり框：建具でも壁でもない）"
@@ -274,7 +322,8 @@ def main():
             fa, hp, side = full_arc(dark_strict, o)
             single = score < ic["double_arc_max_single"] and fa >= cfg["opening_detection"]["arc_min"]
             # (wide closets read as storage are 折戸: they go on to the V test below)
-            if score < ic["double_arc_confirm"] and not single and o["width_mm"] <= ic["swing_max_mm"]:
+            if score < ic["double_arc_confirm"] and not single and o["width_mm"] <= ic["swing_max_mm"] \
+                    and not v_pair(dark, dark_strict, o, ic):
                 # neither two half arcs nor one full arc: not a door that can be confirmed (プラン2
                 # 1F, above the toilet: 0.6; real 両開き 0.93-1.0). No door rather than a wrong one
                 print(f"建具とみなさない（円弧が確かめられない）: {i} storage 幅{round(o['width_mm'])} 半円弧{score:.2f}")
@@ -294,7 +343,17 @@ def main():
                 continue
             if score >= ic["double_arc_min"]:
                 continue  # two half arcs drawn: a confirmed 両開き (not a 折戸 because of hangers)
-            if score < ic["double_arc_max_single"] and fa >= cfg["opening_detection"]["arc_min"]:
+            if o["width_mm"] > ic["swing_max_mm"] and not v_pair(dark, dark_strict, o, ic):
+                # wider than any swing door, and no 折戸 V: a sliding door whose leaf runs on into the wall
+                # (プラン6 1F ゲストルーム：2枚の戸が戸袋に引き込む。2枚の戸の端が円弧に見えた。user 11/17)
+                pk = pocket_side(dark_light, o, ic)
+                if o.get("lines") and pk:
+                    print(f"片引戸（広い）: {i} storage 幅{round(o['width_mm'])} 引き込みが {pk}")
+                    o["kind_before"] = o["kind"]
+                    o["kind"], o["pocket"] = "sliding_pocket", pk
+                    continue
+            if score < ic["double_arc_max_single"] and fa >= cfg["opening_detection"]["arc_min"] \
+                    and o["width_mm"] <= ic["swing_max_mm"]:
                 print(f"片開き: {i} storage 幅{round(o['width_mm'])} 半円弧{score:.2f} 円弧{fa:.2f}")
                 o["kind_before"] = o["kind"]
                 o["kind"] = "swing"
@@ -323,7 +382,8 @@ def main():
         pos, neg, where = diagonals(dark, o, ic)
         o["diagonals"] = [pos, neg]
         folding = (o["kind"] == "sliding" and min(pos, neg) >= ic["fold_min_each"]) or \
-                  (o["kind"] in ("swing", "storage") and pos + neg >= ic["fold_min_total"])
+                  (o["kind"] in ("swing", "storage") and pos + neg >= ic["fold_min_total"]) or \
+                  (o["kind"] in ("swing", "storage") and v_pair(dark, dark_strict, o, ic))
         if folding:
             # a full-width swing arc means a swing door, whatever diagonals lie beside it (stair
             # lines next to a door made プラン2 2F's swing door a 折戸, user 10/24)

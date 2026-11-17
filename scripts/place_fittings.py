@@ -115,6 +115,11 @@ def _load_one(path, offsets):
             # 足りず、壁の戻り線が窓にはみ出した、user 11/13）
             ally = [y * S for e in b["entities"] if e["type"] == "LINE" for y in (e["start_y"], e["end_y"])]
             inner = min(ally) if ally else inner
+        if "_2枚連動片引戸_" in name:
+            # 2枚連動片引戸は、戸袋に2枚が引き込む片引戸。片引戸と同じに扱い、幅（開口＋戸袋）の近い方を選ぶ
+            # （プラン6 1F ゲストルーム：開口1645＋戸袋で約2500。引違い戸ではない。user 11/17）
+            lib[name] = (name, b["entities"], w / S, "片引戸", w, offsets.get(name, std_offset("片引戸", w)), inner)
+            continue
         for word in WORDS:
             if f"_{word}_" in name:
                 lib[name] = (name, b["entities"], w / S, word, w, offsets.get(name, std_offset(word, w)), inner)
@@ -247,7 +252,9 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
             t = mapper.xmm(start_px) if h else mapper.ymm(start_px)
             hinge_low = abs(t - a) <= abs(t - b)
         o_use = o
-        if o["kind"] == "sliding_pocket" and not o.get("outset") and perp_at is not None and hinge_low is not None:
+        # 2000 以上は 2枚連動片引戸（W2430）：1644／1454 に丸めない（プラン6 1F ゲストルーム、user 11/17）
+        if o["kind"] == "sliding_pocket" and not o.get("outset") and perp_at is not None and hinge_low is not None \
+                and o["width_mm"] < 2000:
             # the frame at the end away from the pocket is over 780 wide: a wall running across that
             # end leaves no room for a W1644, so the narrower part is used (user 10/28: プラン5 2F, プラン3 1F)
             end = ga if hinge_low else gb
