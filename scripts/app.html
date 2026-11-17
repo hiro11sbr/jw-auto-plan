@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JW AUTO DRAW</title>
+<style>
+/* 暗い背景に白線の図面（参考図面1階の拡大。scripts\ui\bg.png）。ロゴは scripts\ui\logo.svg を替えれば差し替わる。
+   流れ：PDF を置く → 右に白い「仕様を選択する」がフェードイン → 仕様を選ぶ → 右下に黒い「作図開始」が出る */
+:root { --bg:#0b0d11; --ink:#f2f2f2; --sub:#9aa4b2; --line:rgba(255,255,255,.45); --red:#ff6a55; --ease:cubic-bezier(.2,.7,.2,1); }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--ink); }
+body { font-family:"Yu Gothic UI","Yu Gothic","Meiryo",sans-serif; font-weight:300; font-size:15px; line-height:1.6; min-height:100vh; }
+.mono { font-family:Consolas,"BIZ UDGothic",monospace; }
+.hide { display:none !important; }
+
+/* 出てくる時の動き：下から少し上がりながらフェードイン（--d で順番にずらす） */
+@keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+@keyframes fade { from { opacity:0; } to { opacity:1; } }
+@keyframes slideL { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:none; } }
+@keyframes slideIn { from { transform:translateX(100%); } to { transform:none; } }
+.rise { animation:rise .7s var(--ease) both; animation-delay:var(--d,0s); }
+
+/* 背景 */
+.bgwrap { position:fixed; inset:0; overflow:hidden; pointer-events:none; }
+.bgwrap img { position:absolute; width:230vw; left:-20vw; top:-70vh; transform:rotate(-9deg); opacity:.8; animation:fade 1.6s ease both; }
+.bgwrap .shade { position:absolute; inset:0; transition:background .6s;
+  background:radial-gradient(ellipse 60% 70% at 78% 35%,rgba(11,13,17,0) 0%,rgba(11,13,17,.35) 45%,rgba(11,13,17,.85) 85%),
+    linear-gradient(90deg,rgba(11,13,17,.92) 0%,rgba(11,13,17,.45) 40%,rgba(11,13,17,0) 70%),
+    linear-gradient(180deg,rgba(11,13,17,0) 55%,rgba(11,13,17,.88) 100%); }
+.bgwrap .dim { position:absolute; inset:0; background:rgba(11,13,17,.55); opacity:0; transition:opacity .25s; }
+body.dragging .bgwrap .dim { opacity:1; }
+body.result .bgwrap .shade { background:rgba(11,13,17,.86); }
+
+/* 1画面目 */
+.hero { position:relative; min-height:100vh; padding:12px 56px 60px; display:flex; flex-direction:column; }
+.logo { width:min(560px,60vw); margin:0 0 0 calc(min(560px,60vw) * -.148); display:block; }   /* 「JW」の字の左端を、下の文字の左端（56px）にそろえる。補助線は左へはみ出してよい */
+.ops { margin-top:auto; padding-bottom:40px; }
+/* PDF を置く画面：枠は画面の真ん中に大きく（端に寄せない） */
+.ops:has(#put:not(.hide)) { margin:auto 0; padding-bottom:0; }
+/* 仕様の画面は情報が多いので、下に寄せず上から並べ、右下のボタンとの間をあける */
+.ops:has(#specPane:not(.hide)) { margin-top:14px; margin-bottom:auto; }
+#put { display:flex; flex-direction:column; align-items:center; }
+#put #drop { width:min(960px, 78vw); height:min(46vh, 420px); }
+#put #drop .msg b { font-size:28px; letter-spacing:.35em; }
+#put #drop .msg small { font-size:13px; margin-top:16px; }
+
+/* PDF を置く枠。ファイルを持って画面に入る＝枠が明るく脈打つ。枠の上に来る＝白く光って「離して置く」 */
+#drop { position:relative; width:520px; max-width:100%; height:200px; border:1px dashed var(--line); display:grid; place-items:center; text-align:center; cursor:pointer;
+  transition:border-color .2s, background .2s, transform .25s var(--ease), box-shadow .25s; }
+/* 置く場所は、少し透ける白のすりガラスで塗る（後ろの図面はぼけて薄く見える） */
+#drop { background:rgba(255,255,255,.07); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); }
+#drop:hover { border-color:#fff; background:rgba(255,255,255,.11); }
+#drop .msg b { display:block; font-weight:300; font-size:22px; letter-spacing:.3em; transition:letter-spacing .25s var(--ease); }
+#drop .msg small { display:block; margin-top:12px; font-size:12px; letter-spacing:.2em; color:var(--sub); }
+#drop .k { position:absolute; width:22px; height:22px; border:0 solid #fff; opacity:0; transition:all .25s var(--ease); }
+#drop .k1 { left:-8px; top:-8px; border-width:2px 0 0 2px; } #drop .k2 { right:-8px; top:-8px; border-width:2px 2px 0 0; }
+#drop .k3 { left:-8px; bottom:-8px; border-width:0 0 2px 2px; } #drop .k4 { right:-8px; bottom:-8px; border-width:0 2px 2px 0; }
+@keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(255,255,255,.0); } 50% { box-shadow:0 0 0 8px rgba(255,255,255,.08); } }
+body.dragging #drop { border-color:rgba(255,255,255,.85); animation:pulse 1.4s ease-in-out infinite; z-index:3; }
+body.dragging #drop .k { opacity:.6; }
+#drop.over { border-style:solid; border-color:#fff; background:rgba(255,255,255,.18); transform:scale(1.03); animation:none !important; box-shadow:0 0 40px rgba(255,255,255,.18); }
+#drop.over .k { opacity:1; } #drop.over .k1 { left:-14px; top:-14px; } #drop.over .k2 { right:-14px; top:-14px; }
+#drop.over .k3 { left:-14px; bottom:-14px; } #drop.over .k4 { right:-14px; bottom:-14px; }
+#drop.over .msg b { letter-spacing:.4em; }
+@keyframes taken { 0% { transform:scale(1.03); background:rgba(255,255,255,.35); } 100% { transform:scale(1); background:rgba(255,255,255,.04); } }
+#drop.taken { animation:taken .5s var(--ease); }
+select { font:inherit; letter-spacing:.1em; color:#fff; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.6);
+  padding:0 18px 4px 4px; margin-left:12px; border-radius:0; cursor:pointer; }
+select option { background:#14171d; color:#fff; }
+
+/* 読み込んだ PDF（左）と、仕様のボタン（右：PDF と右端のあいだの真ん中） */
+/* PDF の画面：縮小図は左に縦に並べる（下に増えてよい）。右上の空いた所に PDF を置く枠 */
+#pick { display:flex; align-items:flex-start; gap:48px; padding-right:0; padding-bottom:24px; }
+.hero:has(#specPane:not(.hide)), .hero:has(#runPage:not(.hide)) { padding-bottom:16px; }
+.hero:has(#pick:not(.hide)) { padding-bottom:0; } .ops:has(#pick:not(.hide)) { padding-bottom:0; }   /* 図を選ぶページは、縦にスクロールしない */
+#pick .left { flex:none; }
+#drop2 { flex:1; height:max(260px,calc(100vh - 490px)); margin-top:68px; border:1px dashed var(--line); display:grid; place-items:center; text-align:center; cursor:pointer;
+  background:rgba(255,255,255,.07); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); transition:border-color .2s, background .2s, transform .25s var(--ease); }
+#drop2:hover { border-color:#fff; background:rgba(255,255,255,.11); }
+#drop2 .msg b { display:block; font-weight:300; font-size:20px; letter-spacing:.3em; }
+#drop2 .msg small { display:block; margin-top:10px; font-size:12px; letter-spacing:.15em; color:var(--sub); }
+body.dragging #drop2 { border-color:rgba(255,255,255,.85); animation:pulse 1.4s ease-in-out infinite; }
+#drop2.over { border-style:solid; border-color:#fff; background:rgba(255,255,255,.18); transform:scale(1.02); animation:none !important; }
+#pick .name { font-size:13px; letter-spacing:.25em; color:#c9ced6; margin-bottom:6px; }
+#pick .name { display:flex; align-items:baseline; }
+#pick .name b { color:#fff; font-weight:400; font-size:18px; letter-spacing:.12em; margin-left:10px; display:flex; flex-direction:column; }   /* 足した PDF は名前を縦に並べる */
+#pick .name b span + span { font-size:15px; color:#dfe3e8; }
+#pick .how { font-size:12px; letter-spacing:.1em; color:var(--sub); margin:0 0 14px; }
+#pick .how a { color:#dfe3e8; border-bottom:1px solid rgba(255,255,255,.4); cursor:pointer; margin-left:14px; }
+/* 戻る・別の PDF：白いボタンの次に目立つ、縁取りのボタン */
+.gbtn { display:inline-flex; align-items:center; gap:10px; border:1px solid rgba(255,255,255,.8) !important; background:rgba(11,13,17,.55);
+  color:#fff !important; font:inherit; font-size:13px; letter-spacing:.2em; padding:9px 20px; cursor:pointer; position:relative; overflow:hidden;
+  transition:background .15s, transform .12s; text-decoration:none; }
+.gbtn:hover { background:rgba(255,255,255,.14); }
+.gbtn:active { transform:scale(.96); }
+.gbtn.pressed { animation:press .38s var(--ease); }
+.gbtn .rip { position:absolute; border-radius:50%; background:rgba(255,255,255,.25); transform:scale(0); animation:rip .55s ease-out forwards; pointer-events:none; }
+#pick .how { display:flex; align-items:center; flex-wrap:wrap; gap:6px 0; }
+#pick .how .gbtn { margin-left:22px; }
+#exists { font-size:13px; color:var(--red); margin:0 0 14px; max-width:560px; }
+/* 縦スクロールなし：1F・2F(・3F) が1列に収まる大きさにして、使わない図は右の列へ回り込む */
+#thumbs { --k:2; --th:min(230px, calc((100vh - 330px - 16px * (var(--k) - 1)) / var(--k))); display:flex; flex-direction:column; flex-wrap:wrap; gap:16px; align-content:flex-start;
+  max-height:calc(var(--k) * var(--th) + (var(--k) - 1) * 16px + 2px); }
+.th { position:relative; height:var(--th); width:calc(var(--th) * 1.565); cursor:pointer; background:#e9ebee; transition:transform .2s var(--ease); }
+.th:hover { transform:translateY(-3px); }
+.th img { width:100%; height:100%; object-fit:contain; display:block; filter:grayscale(1) contrast(1.05); opacity:.55; transition:opacity .2s; }
+.th:hover img, .th.on img { opacity:1; }
+.th .tag { position:absolute; left:0; top:0; background:#000; padding:4px 12px; font:400 13px "Segoe UI",sans-serif; letter-spacing:.2em; }
+/* 図を外す×：枠なし。白い図の上に、黒い細い線2本の×だけ（触った図にだけ出る）。
+   押すと×のまわりに四角い枠が線で引かれ、そのあと図がすっと消える */
+.th .del { position:absolute; right:0; top:0; width:24px; height:24px; border:0; padding:0; background:none; color:#111; cursor:pointer; display:grid; place-items:center;
+  opacity:0; transition:opacity .2s, color .15s; }
+.th .del svg { display:block; overflow:visible; }
+/* 白い丸（枠線なし）に黒い×。押すと白黒が反転する */
+.th .del .cc { fill:#fff; transition:fill .18s var(--ease); }
+.th .del .x line { stroke:#111; stroke-width:1.4; stroke-linecap:butt; transition:stroke .18s var(--ease); }
+.th:hover .del { opacity:.85; }
+.th .del:hover { opacity:1; }
+.th.bye .del { opacity:1; }
+.th.bye .del .cc { fill:#111; }
+.th.bye .del .x line { stroke:#fff; }
+.th.bye { animation:thout .4s .3s cubic-bezier(.6,0,.4,1) forwards; pointer-events:none; }
+@keyframes thout { to { opacity:0; transform:translateX(-24px); } }
+/* 使わない図は小さくして、1F・2F の右の列に回り込ませる */
+.th:not(.on):not(.empty) { height:calc(var(--th) * .5); width:calc(var(--th) * .5 * 1.565); }
+.th.empty { background:transparent; border:1px dashed rgba(255,255,255,.35); cursor:default; }
+.th.empty:hover { transform:none; }
+.th.empty .tag { background:none; color:rgba(255,255,255,.7); }
+.th[draggable="true"] { cursor:grab; }
+.th.drag { opacity:.4; } .th.drag.out { opacity:.12; }
+.th.over { outline:2px solid #fff; outline-offset:3px; }
+.th.over img { opacity:1; }
+body.few .th .del { display:none; }
+body.few .th:not(.on) { display:none; }
+
+/* 押した感：一瞬へこんで戻る＋押した所から波紋 */
+@keyframes press { 0% { transform:scale(1); } 30% { transform:scale(.93); } 65% { transform:scale(1.03); } 100% { transform:scale(1); } }
+@keyframes rip { to { transform:scale(1); opacity:0; } }
+
+/* 仕様を選択する を押す → 背景はそのまま、PDF とボタンが左へスワイプされて消え、仕様の選択窓と作図開始が右から入る */
+@keyframes outL { from { opacity:1; transform:none; } to { opacity:0; transform:translateX(-70vw); } }
+@keyframes inR { from { opacity:0; transform:translateX(60vw); } to { opacity:1; transform:none; } }
+@keyframes outR { from { opacity:1; transform:none; } to { opacity:0; transform:translateX(60vw); } }
+@keyframes inL { from { opacity:0; transform:translateX(-70vw); } to { opacity:1; transform:none; } }
+#pick.outL { animation:outL .55s cubic-bezier(.6,0,.4,1) both; }
+#pick.inL { animation:inL .6s var(--ease) both; }
+#specPane { display:flex; align-items:flex-end; gap:clamp(60px, 6vw, 130px); }
+#specPane.inR { animation:inR .65s var(--ease) both; }
+#specPane.outR { animation:outR .5s cubic-bezier(.6,0,.4,1) both; }
+#specPane .win { width:min(clamp(400px, 26vw, 480px),100%); flex:none; }
+#specPane .ttl { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:6px; }
+#specPane .ttl b { font-weight:300; font-size:13px; letter-spacing:.35em; color:#c9ced6; }
+#specPane .ttl { align-items:center !important; }
+#specPane .sum { font-size:12px; letter-spacing:.12em; color:var(--sub); margin:0 0 14px; }
+#specList button { display:flex; align-items:center; gap:16px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid rgba(255,255,255,.2); color:#fff; font:inherit;
+  font-size:18px; letter-spacing:.15em; padding:16px 8px; cursor:pointer; transition:background .15s, padding .2s var(--ease); }
+#specList button::before { content:""; width:12px; height:12px; border:1px solid rgba(255,255,255,.7); border-radius:50%; flex:none; transition:all .2s; }
+#specList button:hover { background:rgba(255,255,255,.06); padding-left:16px; }
+#specList button.on { background:rgba(255,255,255,.1); }
+#specList button.on::before { background:#fff; box-shadow:0 0 0 3px rgba(11,13,17,1), 0 0 0 4px #fff; }
+#specList button small { margin-left:auto; font-size:11px; color:var(--sub); letter-spacing:.2em; }
+#specList button.cust { color:#dfe3e8; }
+
+/* 自分で数字を入れる（配布用）：入力欄は下線だけ、壁の断面は白線で描く。窓の右に出る */
+#specPane { align-items:flex-start; }
+#custom { flex:1; min-width:0; padding-top:4px; }  /* 右端（作図を開始の右端）まで使う：左に寄って右が空かないように */
+#custom.inR2 { animation:inR .6s var(--ease) both; }
+#custom .cols { display:flex; gap:clamp(36px, 3.5vw, 80px); align-items:flex-start; justify-content:space-between; }
+#custom .nums { width:340px; flex:none; position:relative; z-index:2; }
+#custom .cols { position:relative; } .sectWrap { z-index:2; }  /* すりガラスより前に出す */
+#custom .row2 { position:relative; z-index:2; }
+#custom .lab, #custom .row2 > * > span, #custom .parts > span { display:block; font-size:12px; letter-spacing:.3em; color:#c9ced6; margin-bottom:6px; }
+#custom .nums label { display:flex; align-items:baseline; gap:10px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,.12); font-size:14px; letter-spacing:.1em; }
+#custom .nums label > span:first-child { flex:1; }
+#custom input[type=number], #custom input[type=text] { width:84px; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.55); color:#fff;
+  font:400 17px "Segoe UI",sans-serif; text-align:right; padding:2px 4px; transition:border-color .15s, background .15s; }
+#custom input:focus { outline:0; border-bottom-color:#fff; background:rgba(255,255,255,.07); }
+#custom input::-webkit-inner-spin-button, #custom input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }  /* 数字の横の灰色の上下ボタンは出さない */
+#custom .nums em.no { font-style:normal; margin-left:10px; color:var(--sub); opacity:0; transition:opacity .25s; } #custom .nums em.no.on { opacity:1; }
+/* 上下の矢印：数字から 12px 離して、縦に2つ */
+#custom .nums label .stp, #custom .stp { display:inline-flex; flex-direction:column; gap:3px; width:14px; margin-left:12px; align-self:center; flex:none; }
+#custom .stp button { background:none; border:0; padding:1px 0; color:rgba(255,255,255,.55); cursor:pointer; display:grid; place-items:center; line-height:0; transition:color .15s, transform .1s; }
+#custom .stp button:hover { color:#fff; } #custom .stp button:active { transform:scale(.85); }
+/* 石膏ボードの選択：見た目はほかの数字の欄と同じ。押すと暗い一覧が下に開く */
+#custom .dd { position:relative; display:inline-flex; align-items:center; }
+#custom .ddv { width:84px; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.55); color:#fff; font:400 17px "Segoe UI","Yu Gothic UI",sans-serif;
+  text-align:right; padding:2px 4px; cursor:pointer; transition:background .15s, border-color .15s; }
+#custom .ddv:hover, #custom .dd.open .ddv { background:rgba(255,255,255,.07); border-bottom-color:#fff; }
+#custom .ddc { display:grid; place-items:center; color:rgba(255,255,255,.55); cursor:pointer; line-height:0; transition:transform .2s var(--ease), color .15s; }
+#custom .dd.open .ddc { transform:rotate(180deg); color:#fff; }
+#custom .ddm { position:absolute; right:26px; top:calc(100% + 6px); width:120px; background:#14171d; border:1px solid rgba(255,255,255,.35); box-shadow:0 14px 34px rgba(0,0,0,.55);
+  display:flex; flex-direction:column; padding:4px 0; z-index:20; opacity:0; transform:translateY(-6px); pointer-events:none; transition:opacity .18s, transform .18s var(--ease); }
+#custom .dd.open .ddm { opacity:1; transform:none; pointer-events:auto; }
+#custom .ddm button { background:none; border:0; color:#dfe3e8; font:400 15px "Segoe UI","Yu Gothic UI",sans-serif; text-align:right; padding:8px 14px; cursor:pointer; letter-spacing:.08em; }
+#custom .ddm button:hover { background:rgba(255,255,255,.1); color:#fff; }
+#custom .ddm button { display:flex; align-items:center; justify-content:flex-end; gap:10px; }
+#custom .ddm button::before { content:""; width:14px; height:14px; margin-right:auto; }
+#custom .ddm button.on { color:#fff; }
+#custom .ddm button.on::before { background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M2 7.5 L5.5 11 L12 3.5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat; }
+#custom select { width:84px; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.55); color:#fff; font:400 17px "Segoe UI","Yu Gothic UI",sans-serif;
+  text-align:right; text-align-last:right; padding:2px 4px; cursor:pointer; appearance:none; -webkit-appearance:none; }
+#custom select:focus { outline:0; border-bottom-color:#fff; background:rgba(255,255,255,.07); }
+#custom select option { background:#0b0d11; color:#fff; }
+/* 石膏ボードは「なし」か「12.5」の2択（太くすると障害が多いため）。柱は 105 で固定 */
+/* 柱は 105 で固定（変えられない） */
+#custom .nums label.fixed .fv { width:84px; text-align:right; padding:2px 4px; font:400 17px "Segoe UI",sans-serif; color:#c9ced6; }  /* 入力欄なし＝変えられない */
+#custom .nums i { font-style:normal; font-size:12px; color:var(--sub); width:24px; }
+#custom .calc { margin:12px 0 0; font-size:13px; letter-spacing:.1em; color:var(--sub); }
+#custom .calc b { color:#fff; font:400 20px "Segoe UI",sans-serif; margin:0 4px; }
+/* 断面図の後ろだけすりガラス：枠は付けず、外へ行くほど薄く消える（背景の図面の線と混ざらないように） */
+.sectWrap { position:relative; flex:1; min-width:280px; max-width:560px; }
+/* すりガラスは背景と同じ動かない層（.bgwrap）に置き、断面図の位置に JS で合わせる。
+   動いている要素の中に置くと、動きの途中はブラウザがぼかしを止めてしまうため */
+#glass { position:absolute; pointer-events:none; opacity:0; transition:opacity .5s ease;
+  background:rgba(11,13,17,.92);  /* ぼかさず、背景（#0b0d11）と同じ色をほぼ不透明で重ねて、後ろの線を消す */
+  /* 四角：断面図の下は同じ濃さ。外側に足した余白（横80・縦70px）の中だけで、外へ徐々に薄くする */
+  -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 80px, #000 calc(100% - 80px), transparent 100%), linear-gradient(180deg, transparent 0, #000 70px, #000 calc(100% - 70px), transparent 100%);
+  -webkit-mask-composite:source-in;
+  mask-image:linear-gradient(90deg, transparent 0, #000 80px, #000 calc(100% - 80px), transparent 100%), linear-gradient(180deg, transparent 0, #000 70px, #000 calc(100% - 70px), transparent 100%);
+  mask-composite:intersect; }
+#glass.on { opacity:1; }
+#sect { position:relative; z-index:1; display:block; width:100%; }
+#sect text { fill:#c9ced6; font:11px "Yu Gothic UI",sans-serif; letter-spacing:.08em; }
+#sect .bump { animation:bump .35s var(--ease); transform-box:fill-box; transform-origin:center; }
+@keyframes bump { 0% { opacity:.3; } 100% { opacity:1; } }
+#custom .row2 { display:flex; gap:40px; margin-top:34px; flex-wrap:wrap; }
+#nameBox { display:block; margin-top:26px; }
+#nameBox .nrow { display:flex; align-items:flex-end; gap:14px; }
+#nameBox .gbtn { flex:none; padding:7px 18px; }
+#nameBox .nmsg { margin:10px 0 0; font-size:11px; letter-spacing:.1em; color:var(--sub); min-height:1.5em; }
+#nameBox .nmsg.ok { color:#fff; } #nameBox .nmsg.ng { color:var(--red); }
+#nameBox > span { display:block; font-size:12px; letter-spacing:.3em; color:#c9ced6; margin-bottom:6px; }
+#nameBox input { width:100%; box-sizing:border-box; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.55); color:#fff; font:400 17px "Yu Gothic UI","Segoe UI",sans-serif; padding:2px 4px; }
+#nameBox input:focus { outline:0; border-bottom-color:#fff; background:rgba(255,255,255,.07); }
+#custom .parts label { display:block; font-size:14px; letter-spacing:.08em; padding:3px 0; cursor:pointer; }
+#custom .parts input { accent-color:#fff; margin-right:8px; }
+#custom .parts em { font-style:normal; margin-left:10px; color:#fff; border-bottom:1px solid rgba(255,255,255,.4); }
+#custom .note { margin-top:14px; font-size:11px; letter-spacing:.12em; color:var(--sub); }
+
+/* 画面が低い時（ノート PC など）は、右下のボタンと重ならないよう、仕様の欄を詰める */
+@media (max-height:820px) {
+  #custom .nums label { padding:4px 0; }
+  #custom .row2 { margin-top:12px; }
+  #custom .calc { margin-top:6px; }
+  #specPane .sum { margin-bottom:8px; }
+  #specList button { padding-top:12px; padding-bottom:12px; }
+}
+/* 右下の操作の置き場（仕様を選択する／作図を開始）。どちらも同じ位置・同じ形 */
+#dock { position:fixed; right:56px; bottom:56px; z-index:5; width:420px; height:110px; pointer-events:none; }
+#specArea, #startArea, #saveArea { position:absolute; right:0; bottom:22px; display:flex; flex-direction:column; align-items:flex-end; pointer-events:auto; }
+#saveArea.inR { animation:inR .65s var(--ease) both; }
+#specPane.outL, #startArea.outL { animation:outL .55s cubic-bezier(.6,0,.4,1) both; }
+#specArea.show { animation:slideL .8s var(--ease) both; animation-delay:.35s; }
+#specArea.outL { animation:outL .55s cubic-bezier(.6,0,.4,1) both; }
+#specArea.inL { animation:inL .6s var(--ease) both; }
+#startArea.inR { animation:inR .65s var(--ease) both; }
+#startArea.outR { animation:outR .5s cubic-bezier(.6,0,.4,1) both; }
+#specNote, #state, #saveNote { position:absolute; right:0; top:100%; margin-top:10px; font-size:12px; letter-spacing:.15em; color:#c9ced6; white-space:nowrap; }
+/* 案3「線で描かれる」：背景と同じ色で塗った箱に、細い白線の枠。触ると枠を一周引き直し、押すと左から白く塗る。
+   仕様を選択する・作図を開始で共通（字だけ違う） */
+.act { position:relative; overflow:hidden; border:0; background:var(--bg); color:#fff; font:inherit; font-weight:400;
+  padding:24px 40px 24px 50px; width:300px; display:flex; align-items:center; justify-content:space-between; gap:24px; cursor:pointer;
+  transition:transform .12s, color .3s; }
+.act .f { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.act .f rect { fill:none; stroke:#fff; stroke-width:3; stroke-dasharray:100; stroke-dashoffset:0; }  /* 半分は外に切れて 1.5px に見える */
+.act:hover:not(:disabled) .f rect { animation:drawBox .9s var(--ease); }
+@keyframes drawBox { 0% { stroke-dashoffset:100; } 100% { stroke-dashoffset:0; } }
+/* 光の波（案D）：次に押すボタンだと分かるよう、やわらかい光の帯が左から右へ、ゆっくり繰り返し通る。
+   押せない時・押した後は止める */
+.act .sw { position:absolute; top:0; bottom:0; width:90px; left:-120px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent);
+  transform:skewX(-20deg); animation:sweep 3.4s ease-in-out infinite; pointer-events:none; }
+@keyframes sweep { 0% { left:-120px; } 55%, 100% { left:360px; } }
+.act:disabled .sw, .act.filled .sw { animation:none; opacity:0; }
+.act .fill { position:absolute; inset:0; background:#fff; transform:scaleX(0); transform-origin:left; transition:transform .45s var(--ease); }
+.act span, .act i { position:relative; }
+.act.filled .fill { transform:scaleX(1); }
+.act.filled { color:var(--bg); }
+.act:active:not(:disabled) { transform:scale(.97); }
+.act:disabled { cursor:default; color:#c9ced6; }
+.act:disabled .f rect { stroke:rgba(255,255,255,.35); }
+.act.filled:disabled { color:var(--bg); }
+/* 字は太めのゴシック。「を」を入れて「作図を開始」（漢字だけだと中国語に見えるため） */
+.act .lb { font-family:"Yu Gothic UI","Yu Gothic","Meiryo",sans-serif; font-weight:700; font-size:19px; letter-spacing:.2em; white-space:nowrap; }
+.act i { font-style:normal; font-size:22px; transition:transform .2s var(--ease); }
+.act:hover:not(:disabled) i { transform:translateX(8px); }
+.srow { display:flex; align-items:center; gap:20px; }
+/* 戻る：白い丸に背景色の矢印＋下に小さく「戻る」。作図開始より控えめ */
+/* 「戻る」の字は丸の下にぶら下げる（ボタンの大きさ＝丸だけ）。丸の芯と、隣のボタンの芯がそろう */
+.rb { background:none; border:0; padding:0; display:block; position:relative; cursor:pointer; flex:none; font:inherit; }
+.rb small { position:absolute; left:50%; top:100%; margin-top:6px; transform:translateX(-50%); white-space:nowrap; }
+.rb .c { width:52px; height:52px; border-radius:50%; background:#fff; display:grid; place-items:center; position:relative; overflow:hidden;
+  box-shadow:0 8px 24px rgba(0,0,0,.35); transition:transform .12s, box-shadow .2s; }
+.rb small { font-size:11px; letter-spacing:.3em; color:#c9ced6; padding-left:.3em; }
+.rb:hover .c { box-shadow:0 10px 30px rgba(0,0,0,.5), 0 0 0 1px #fff; }
+.rb svg { transition:transform .2s var(--ease); } .rb:hover svg { transform:translateX(-3px); }
+.rb:active .c { transform:scale(.92); }
+.rb .c.pressed { animation:press .38s var(--ease); }
+.rb .c .rip { position:absolute; border-radius:50%; background:rgba(11,13,17,.18); transform:scale(0); animation:rip .55s ease-out forwards; pointer-events:none; }
+.rb:disabled { cursor:default; opacity:.3; }
+#state.busy::after { content:""; display:inline-block; width:1.2em; animation:dots 1.2s steps(4) infinite; overflow:hidden; vertical-align:bottom; }
+@keyframes dots { 0% { width:0 } 100% { width:1.2em } }
+
+/* 作業記録 */
+#logwrap { margin-top:22px; max-width:640px; }
+#logwrap .lab { font-size:11px; letter-spacing:.3em; color:var(--sub); margin-bottom:4px; }
+#log { font:11.5px/1.6 Consolas,monospace; height:150px; overflow:auto; white-space:pre-wrap; color:#c9ced6; border-left:1px solid var(--line); padding-left:12px; }
+
+/* 結果 */
+#res { position:relative; padding:40px 56px 160px; }
+#res .head { display:flex; justify-content:space-between; align-items:baseline; gap:20px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:12px; }
+#res .head h2 { margin:0; font-weight:300; font-size:13px; letter-spacing:.35em; color:#c9ced6; }
+.link { font:inherit; font-size:13px; letter-spacing:.15em; color:#fff; background:none; border:0; border-bottom:1px solid rgba(255,255,255,.5); padding:0 0 2px; cursor:pointer; }
+#outPath { font-size:11px; color:var(--sub); margin-left:12px; }
+.floors { display:grid; grid-template-columns:1fr 1fr; gap:48px; margin-top:26px; }
+.floor h3 { margin:0 0 14px; display:flex; align-items:baseline; gap:22px; font:300 30px "Segoe UI",sans-serif; letter-spacing:.15em; }
+.verdict { font:400 14px "Yu Gothic UI",sans-serif; letter-spacing:.2em; }
+.verdict.ng { color:var(--red); } .verdict.none { color:var(--sub); }
+.floor figure { margin:0 0 18px; }
+.floor figcaption { font-size:11px; letter-spacing:.2em; color:var(--sub); margin-bottom:6px; }
+.floor img { width:100%; display:block; background:#fff; }
+.floor pre { font:11.5px/1.6 Consolas,monospace; white-space:pre-wrap; margin:0 0 14px; color:#ffb4a8; }
+
+
+/* ===== 作成中・完了のページ ===== */
+@keyframes bgdim { from { opacity:1; } to { opacity:.2; } }
+body.running .bgwrap img { animation:bgdim 1s ease both; }   /* 背景の白い図面は、このページでは薄くする */
+body.running .bgwrap .shade { background:linear-gradient(90deg,rgba(11,13,17,.9) 0%,rgba(11,13,17,.5) 45%,rgba(11,13,17,.25) 100%),linear-gradient(180deg,rgba(11,13,17,0) 60%,rgba(11,13,17,.85) 100%); }
+#runPage { position:absolute; inset:0; }   /* z-index は付けない（付けると、元の図の反転が背景に溶けなくなる） */
+#runPage.inR { animation:inR .65s var(--ease) both; }
+.rwrap { position:absolute; left:56px; top:150px; width:min(700px,46vw); }
+.rwrap h1 { margin:0; font-weight:300; font-size:42px; letter-spacing:.2em; }
+.dt { display:inline-block; font-family:Consolas,monospace; letter-spacing:0; margin-left:.12em; }
+.dt i { font-style:normal; opacity:0; animation:dd1 3.4s ease-in-out infinite; }   /* 点は1つずつ、なめらかに現れ、まとめて消えて、また1つから */
+.dt i:nth-child(2) { animation-name:dd2; } .dt i:nth-child(3) { animation-name:dd3; }
+@keyframes dd1 { 0% { opacity:0; } 12% { opacity:1; } 86% { opacity:1; } 100% { opacity:0; } }
+@keyframes dd2 { 0%, 16% { opacity:0; } 30% { opacity:1; } 86% { opacity:1; } 100% { opacity:0; } }
+@keyframes dd3 { 0%, 34% { opacity:0; } 48% { opacity:1; } 86% { opacity:1; } 100% { opacity:0; } }
+.pr-tot { margin:10px 0 18px; font-size:13px; letter-spacing:.2em; color:var(--sub); border-bottom:1px solid var(--line); padding-bottom:12px; display:flex; justify-content:space-between; }
+.pr-tot b { font:400 18px "Segoe UI",sans-serif; color:#fff; letter-spacing:.08em; margin-left:10px; }
+.pr-row { display:grid; grid-template-columns:34px 1fr 104px 110px; align-items:center; padding:11px 0; border-bottom:1px solid rgba(255,255,255,.1); font-size:17px; letter-spacing:.14em; }
+.pr-ic { width:22px; height:22px; border-radius:50%; border:1px solid rgba(255,255,255,.4); display:grid; place-items:center; position:relative; }
+.pr-row.done .pr-ic { background:#fff; border-color:#fff; }
+.pr-row.now .pr-ic { border-color:#fff; }
+.pr-row.now .pr-ic::after { content:""; position:absolute; inset:-5px; border-radius:50%; border:1px solid rgba(255,255,255,.5); animation:ringp 1.8s ease-out infinite; }
+@keyframes ringp { 0% { transform:scale(.85); opacity:.9; } 100% { transform:scale(1.5); opacity:0; } }
+.pr-row.fail .pr-ic { border-color:var(--red); } .pr-row.fail { color:var(--red); }
+.pr-row.pend { color:rgba(255,255,255,.35); }
+.pr-row .dt { display:none; } .pr-row.now .dt { display:inline-block; }
+.pr-fl { display:flex; gap:14px; justify-content:flex-end; font:11px "Segoe UI"; letter-spacing:.1em; color:var(--sub); }
+.pr-fl span { display:flex; align-items:center; gap:5px; }
+.pr-fl i { width:9px; height:9px; border-radius:50%; border:1px solid rgba(255,255,255,.5); display:inline-block; }
+.pr-fl i.on { background:#fff; border-color:#fff; } .pr-fl i.cur { border-color:#fff; box-shadow:0 0 0 3px rgba(255,255,255,.2); }
+.pr-tm { text-align:right; font:400 16px "Segoe UI",sans-serif; letter-spacing:.08em; color:#e8ebef; }
+.pr-row.pend .pr-tm { color:rgba(255,255,255,.25); }
+.pr-row.fin .pr-nm { font-weight:700; }
+.pr-tr { padding:9px 0 9px 34px; font-size:12px; letter-spacing:.18em; color:var(--sub); display:flex; align-items:center; gap:12px; transition:color .4s; }
+.pr-tr::before { content:""; width:26px; height:1px; background:var(--sub); transition:background .4s; }
+.pr-tr.on { color:#fff; } .pr-tr.on::before { background:#fff; }
+#rLinks { margin-top:18px; display:flex; gap:28px; font-size:13px; letter-spacing:.15em; }
+#rLinks a { color:#dfe3e8; border-bottom:1px solid rgba(255,255,255,.4); cursor:pointer; padding-bottom:2px; }
+#runPage #logwrap { margin-top:18px; }
+.rh { position:absolute; left:calc(50% + 30px); right:56px; top:158px; bottom:165px; }   /* 上は「作成中」の字、下は左の一覧の下端にそろえる */
+.pr-cap { position:absolute; left:0; top:-8px; font-size:12px; letter-spacing:.25em; color:var(--sub); }
+.pr-cap b { color:#fff; font-weight:400; margin:0 6px 0 10px; font-size:15px; letter-spacing:.2em; }
+#plot { position:absolute; left:0; right:0; top:30px; bottom:0; overflow:hidden; background:var(--bg); }   /* 後ろの図面が透けないよう、背景の色で塗る */
+#plot .pgrid { position:absolute; inset:0; border:1px dashed rgba(255,255,255,.12); }
+.pscan, .pplot { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.pscan { filter:invert(1) grayscale(1) contrast(1.1) brightness(.9); mix-blend-mode:screen; opacity:0; transition:opacity .6s; }   /* 白い紙は黒に反転し、screen で背景に溶ける */
+.pscan.on { opacity:.1; }
+.pplot { clip-path:inset(0 100% 0 0); }
+.pplot.show { animation:reveal 3.4s linear forwards; }
+@keyframes reveal { to { clip-path:inset(0 0 0 0); } }
+.pedge, .psweep { position:absolute; top:0; bottom:0; left:0; width:2px; opacity:0; background:linear-gradient(180deg,transparent,#fff 20%,#fff 80%,transparent); box-shadow:0 0 14px rgba(255,255,255,.8); pointer-events:none; }
+.pedge.run { animation:edgex 3.4s linear forwards; }
+@keyframes edgex { 0% { left:0; opacity:1; } 92% { opacity:1; } 100% { left:calc(100% - 2px); opacity:0; } }
+/* 読み取りの縦線：左から右へ一定の速さで1回通る（3.2秒）。線のすぐ左（いま読んだ所）がいちばん明るく、左へ行くほど薄い光の帯が付いてくる。
+   線が右端に着いたら、帯は約2.5秒かけて消える。周期は 8秒（線と線の間は約4.8秒） */
+.psweep { inset:0; width:auto; left:0; background:none; box-shadow:none; overflow:hidden; transition:opacity .5s; }
+.psweep.on { opacity:1; }
+.psweep::before { content:""; position:absolute; top:0; bottom:0; opacity:0; }
+.psweep.on::before { left:0; width:2px; background:linear-gradient(180deg,transparent,#fff 20%,#fff 80%,transparent); box-shadow:0 0 14px rgba(255,255,255,.8); animation:swLine 5s linear infinite; }
+
+@keyframes swLine { 0% { left:0; opacity:.85; } 64% { left:calc(100% - 2px); opacity:.85; } 66%, 100% { left:calc(100% - 2px); opacity:0; } }
+/* 読んだ所の図面が明るくなる：同じ図をもう1枚重ね、線の位置で切り抜く。線のすぐ左がいちばん明るく、線から遠いほど暗い。
+   明るくなるのは図面の線だけ（黒い所は screen で重ねても黒のまま）。線が右端に着いたら、約2.5秒かけて元に戻る */
+@property --sx { syntax:"<percentage>"; inherits:false; initial-value:0%; }
+.pglow { opacity:0; transition:none; filter:invert(1) grayscale(1) contrast(1.2) brightness(1.15);
+  -webkit-mask-image:linear-gradient(90deg, transparent calc(var(--sx) - 55%), rgba(0,0,0,.25) calc(var(--sx) - 25%), rgba(0,0,0,.7) calc(var(--sx) - 6%), #000 var(--sx), transparent var(--sx));
+  mask-image:linear-gradient(90deg, transparent calc(var(--sx) - 55%), rgba(0,0,0,.25) calc(var(--sx) - 25%), rgba(0,0,0,.7) calc(var(--sx) - 6%), #000 var(--sx), transparent var(--sx)); }
+.pglow.on { animation:glow 5s linear infinite; }
+@keyframes glow { 0% { --sx:0%; opacity:.9; } 64% { --sx:100%; opacity:.9; } 99% { --sx:100%; opacity:0; } 100% { --sx:0%; opacity:0; } }
+#files { position:absolute; left:0; right:0; top:30px; bottom:0; display:flex; gap:60px; justify-content:center; align-items:flex-start; padding-top:90px; flex-wrap:wrap; align-content:flex-start; }
+.ficon { width:200px; text-align:center; cursor:grab; }
+.ficon:active { cursor:grabbing; }
+.doc2 { width:140px; height:180px; margin:0 auto 22px; border:2px solid #fff; position:relative; background:rgba(255,255,255,.06); display:grid; place-items:end center; padding-bottom:26px; box-shadow:0 14px 40px rgba(0,0,0,.4); transition:transform .2s var(--ease); }
+.ficon:hover .doc2 { transform:translateY(-4px); }
+.doc2::before { content:""; position:absolute; right:-2px; top:-2px; width:38px; height:38px; background:var(--bg); border-left:2px solid #fff; border-bottom:2px solid #fff; }
+.doc2 span { font:600 22px "Segoe UI"; letter-spacing:.12em; position:relative; }
+/* 光の波：ファイルの上を、やわらかい光の帯がゆっくり左から右へ通る（つかんで動かせる、の合図）。ファイルごとに少しずらす */
+.doc2::before { z-index:1; }
+.doc2 .dclip { position:absolute; inset:0; overflow:hidden; pointer-events:none; }   /* 光だけ枠の中で切る（折った角は切らない） */
+.doc2 .dsw { position:absolute; top:-10%; bottom:-10%; left:-90px; width:70px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent);
+  transform:skewX(-20deg); animation:dsweep 3.6s ease-in-out infinite; animation-delay:calc(1.2s + var(--w,0s)); pointer-events:none; }
+@keyframes dsweep { 0% { left:-90px; } 50%, 100% { left:calc(100% + 40px); } }
+.ficon:hover .dsw { animation-play-state:paused; opacity:0; }
+.ficon .nm2 { font:600 20px "Yu Gothic UI","Segoe UI"; letter-spacing:.1em; }
+.ficon .sb { font-size:12px; letter-spacing:.1em; color:var(--sub); margin-top:6px; }
+.ficon .okb { display:inline-block; margin-top:12px; font-size:11px; letter-spacing:.18em; border:1px solid rgba(255,255,255,.45); padding:3px 12px; }
+.ficon .okb.ng { border-color:var(--red); color:var(--red); }
+#dest { position:absolute; left:0; right:0; bottom:36px; border-top:1px solid var(--line); padding-top:14px; display:flex; justify-content:space-between; gap:20px; align-items:baseline; font-size:13px; letter-spacing:.15em; color:var(--sub); }
+#dest b { font:400 15px "Segoe UI","Yu Gothic UI"; color:#fff; letter-spacing:.05em; margin-left:10px; }
+#dest > span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+@media (max-width:900px) {
+  .hero { padding:24px 20px 40px; } .ops { padding-bottom:140px; } #pick { flex-direction:column; align-items:stretch; }
+  .th { width:calc(50% - 9px); height:120px; } #specBtn, #specList { min-width:0; width:100%; }
+  #res { padding:30px 20px 160px; } .floors { grid-template-columns:1fr; }
+  #start { min-width:0; flex:1; } .srow { width:100%; }
+}
+/* 画面が低い時の、作成中・完了のページ（上の決まりより後に置いて、上書きする） */
+@media (max-height:820px) {
+  .rwrap { top:150px; } .rwrap h1 { font-size:34px; }
+  .pr-tot { margin:6px 0 10px; padding-bottom:8px; }
+  .pr-row { padding:7px 0; } .pr-tr { padding:5px 0 5px 34px; }
+  #rLinks { margin-top:12px; }
+  .rh { top:156px; bottom:140px; }
+  #files { padding-top:30px; } .doc2 { width:110px; height:140px; margin-bottom:14px; } #dest { bottom:20px; }
+}
+@media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation-duration:.01s !important; transition-duration:.01s !important; } }
+</style>
+</head>
+<body>
+<div class="bgwrap"><div class="shade"></div><div class="dim"></div><div id="glass"></div></div>
+
+<div class="hero">
+  <img class="logo rise" style="--d:.2s" src="/ui/logo.svg" alt="JW AUTO DRAW">
+
+  <div class="ops">
+    <div id="put">
+      <div id="drop" class="rise" style="--d:.5s"><span class="k k1"></span><span class="k k2"></span><span class="k k3"></span><span class="k k4"></span>
+        <div class="msg"><b>PDF・画像をここに置く</b><small>PDF・PNG・JPG　／　クリックして選ぶこともできます</small></div></div>
+      <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg" class="hide"><input type="file" id="file2" accept=".pdf,.png,.jpg,.jpeg" multiple class="hide">
+    </div>
+
+    <div id="pick" class="hide">
+      <div class="left">
+        <div class="name rise">PDF<b id="pname"></b></div>
+        <p class="how rise" style="--d:.08s"><span id="howT">図をクリックして、1階・2階を選びます</span></p>
+        <p id="exists" class="hide rise" style="--d:.12s">このプランは作図済みです。もう一度作図すると、前の結果（手で直した判定も）を上書きします。</p>
+        <div id="thumbs"></div>
+      </div>
+      <!-- PDF を足す枠（右の空いた所）。置いた PDF の図が、左の一覧に加わる（替わらない） -->
+      <div id="drop2" class="rise" style="--d:.2s"><div class="msg"><b>PDF・画像を追加</b><small>図が別のファイルにあるときは、ここに置く</small></div></div>
+    </div>
+
+    <div id="specPane" class="hide">
+      <div class="win">
+        <div class="ttl"><b>仕様を選ぶ</b></div>
+        <div id="specList"></div>
+        <div class="hide" id="nameBox"><span>この仕様を保存</span>
+          <div class="nrow"><input type="text" id="cName" placeholder="仕様の名前" autocomplete="off"><button type="button" class="gbtn" id="saveSpec">保存する</button></div>
+          <p class="nmsg" id="saveMsg"></p></div>
+      </div>
+      <!-- 配布用：自分で数字を入れる（壁の厚み・建具の部品）。いまは見た目だけで、作図にはまだ使えない -->
+      <div id="custom" class="hide">
+        <div class="cols">
+          <div class="nums">
+            <div class="lab">壁の厚み</div>
+            <label><span>外壁材</span><input type="number" step="0.5" data-k="ext" value="16"><i>mm</i></label>
+            <label><span>通気層</span><input type="number" step="0.5" data-k="air" value="18"><i>mm</i></label>
+            <label><span>付加断熱<em class="no" id="insNo">（なし）</em></span><input type="number" step="0.5" min="0" data-k="ins" value="60" id="insIn"><i>mm</i></label>
+            <label><span>構造用面材</span><input type="number" step="0.5" data-k="osb" value="9.5"><i>mm</i></label>
+            <label class="fixed"><span>柱</span><b class="fv">105</b><input type="hidden" data-k="col" value="105"><i>mm</i></label>
+            <label><span>室内側の石膏ボード</span><select data-k="pb" id="pbIn"><option value="0">なし</option><option value="12.5" selected>12.5</option></select><i>mm</i></label>
+            <p class="calc">柱芯から外壁の面まで <b id="toFace">156</b> mm</p>
+            <!-- 建具の部品は数字の列のすぐ下（断面図の高さに引っ張られて下に離れないように） -->
+            <div class="row2">
+              <div class="parts"><span>建具の部品</span>
+                <label><input type="radio" name="parts" id="pGen" checked> 汎用の形（メーカーなし）</label>
+                <label><input type="radio" name="parts" id="pOwn"> 自分の部品集（.jww）を選ぶ<em id="pName"></em></label>
+                <input type="file" id="pFile" accept=".jww" class="hide"></div>
+            </div>
+          </div>
+          <div class="sectWrap"><svg id="sect" viewBox="0 0 360 262"></svg></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 作成中・完了のページ。仕様の画面と入れ替わりに、右からスライドインする -->
+  <div id="runPage" class="hide">
+    <div class="rwrap">
+      <h1 id="rTitle">作成中<span class="dt"><i>.</i><i>.</i><i>.</i></span></h1>
+      <div class="pr-tot"><span id="rMeta"></span><span><span id="rTotL">経過</span><b id="rTotV">0:00</b></span></div>
+      <div id="rows"></div>
+      <div id="rLinks" class="hide"><a id="toRes">検査の詳細を見る ↓</a><a id="again">新しく作る</a></div>
+      <div id="logwrap" class="hide"><div class="lab">作業記録</div><div id="log"></div></div>
+    </div>
+    <div class="rh">
+      <div class="pr-cap" id="rCap"></div>
+      <div id="plot"><div class="pgrid"></div><img id="pScan" class="pscan" alt=""><img id="pGlow" class="pscan pglow" alt=""><div id="pSweep" class="psweep"></div><img id="pPlot" class="pplot" alt=""><div id="pEdge" class="pedge"></div></div>
+      <div id="files" class="hide"></div>
+      <div id="dest" class="hide"><span>保存先<b id="destV">未選択</b></span><span id="destM">ファイルはドラッグでも取り出せます</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 右下の操作：仕様を選択する／作図を開始。同じ位置・同じ形で、場面に合わせて入れ替わる -->
+<div id="dock">
+      <div id="specArea" class="hide">
+        <div class="srow">
+          <!-- 別の PDF に戻る：作図開始の隣の戻ると同じ、白い丸に背景色の矢印 -->
+          <button id="other" class="rb" title="別の PDF にする" aria-label="別の PDF にする"><span class="c"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M19 12 H5 M11 6 L5 12 L11 18" fill="none" stroke="#0b0d11" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><small>戻る</small></button>
+          <button id="specBtn" class="act"><svg class="f" preserveAspectRatio="none"><rect x="0" y="0" width="100%" height="100%" pathLength="100"/></svg><span class="sw"></span><span class="fill"></span><span class="lb" id="specLabel">仕様を選択する</span><i>→</i></button>
+        </div>
+        <div id="specNote"></div>
+        <select id="spec" class="hide"></select>
+      </div>
+            <div id="startArea" class="hide">
+        <div class="srow">
+          <!-- 戻る：白い丸に背景色の矢印。作図開始より小さく -->
+          <button id="back" class="rb" title="PDF に戻る" aria-label="PDF に戻る"><span class="c"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M19 12 H5 M11 6 L5 12 L11 18" fill="none" stroke="#0b0d11" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><small>戻る</small></button>
+          <button id="start" class="act hide" disabled><svg class="f" preserveAspectRatio="none"><rect x="0" y="0" width="100%" height="100%" pathLength="100"/></svg><span class="sw"></span><span class="fill"></span><span class="lb">作図を開始</span><i>→</i></button>
+        </div>
+        <div id="state"></div>
+      </div>
+      <div id="saveArea" class="hide">
+        <div class="srow">
+          <button id="saveBtn" class="act"><svg class="f" preserveAspectRatio="none"><rect x="0" y="0" width="100%" height="100%" pathLength="100"/></svg><span class="sw"></span><span class="fill"></span><span class="lb" id="saveLbl">保存先を選ぶ</span><i>→</i></button>
+        </div>
+      </div>
+</div>
+
+<section id="res" class="hide">
+  <div class="head"><h2>できた図面</h2><span><button class="link" id="openOut">出力フォルダを開く</button><span class="mono" id="outPath"></span></span></div>
+  <div class="floors" id="floors"></div>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+let cur = null, sel = {"1F": null, "2F": null, "3F": null}, nextFl = "1F", nf = 2, outDir = null, specs = {names: [], current: ""}, chosen = null, running = false, stage = "pdf";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const replay = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
+// 出てくる動きが終わったら外す（残すと、ドラッグで枠が大きくなる動きなどを打ち消すため）
+document.addEventListener("animationend", e => {
+  if (e.animationName === "rise") e.target.classList.remove("rise");
+  if (e.animationName === "taken") e.target.classList.remove("taken");
+  // 入ってくる動きも終わったら外す（残ると、断面図の後ろのすりガラスが効かなくなる）
+  if (e.animationName === "inR" || e.animationName === "inL") e.target.classList.remove("inR", "inR2", "inL");
+});
+
+async function api(path, opt) { const r = await fetch(path, opt); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
+
+async function init() {
+  const s = await api("/api/state");
+  specs = s.specs;
+  // SNS 用の画像・動画（?demo）：会社の仕様は出さず、外壁などの厚みを自分で入れる仕様だけにする
+  if (new URLSearchParams(location.search).has("demo")) specs = {names: [], current: ""};
+  $("#spec").innerHTML = specs.names.map(n => `<option>${esc(n)}</option>`).join("");
+  poll(true);
+}
+
+const SL = ["1F", "2F", "3F"];   // 枠は常に3つ（3Fは空けておく場所）
+const FLS = () => sel["3F"] ? SL : ["1F", "2F"];   // 作る階：1F・2Fは必須、3Fは図を置いた時だけ作図
+let gone = new Set(), added = [];   // 一覧から外した図／あとから足した PDF の名前
+
+function showPick(r) {
+  cur = r; nf = 2; sel = {"1F": r.guess["1F"] || null, "2F": r.guess["2F"] || null, "3F": null}; nextFl = "1F"; chosen = null;
+  gone = new Set(); added = [];
+  $("#pname").textContent = r.pdf; stage = "pdf";
+  $("#specPane").classList.add("hide"); $("#pick").classList.remove("outL", "inL");
+  $("#put").classList.add("hide"); $("#pick").classList.remove("hide");
+  $("#exists").classList.toggle("hide", !r.exists);
+  document.body.classList.toggle("few", FLS().every(f => sel[f]));
+  $("#pick").querySelectorAll(".rise").forEach(el => replay(el, "rise"));
+  $("#specNote").textContent = specs.current ? `前回：${specs.current}` : "";
+  $("#startArea").classList.add("hide"); $("#specArea").classList.remove("hide", "outL", "inL"); replay($("#specArea"), "show");
+  draw(true); ready();
+  if (r.error) alert("図の取り出しで問題がありました：\n" + r.error);
+}
+
+const DELSVG = '<svg viewBox="0 0 24 24" width="24" height="24"><circle class="cc" cx="12" cy="12" r="10"/><g class="x"><line x1="8" y1="8" x2="16" y2="16"/><line x1="16" y1="8" x2="8" y2="16"/></g></svg>';
+let dragFile = null, dropped = false;
+
+// 一覧から外す（ファイルは消さない）：×を押した時も、図を外へドラッグした時も同じ
+function removeImg(f, el) {
+  el.classList.add("bye");   // ×が反転してから、図が消える
+  setTimeout(() => {
+    gone.add(f); SL.forEach(x => { if (sel[x] === f) sel[x] = null; });
+    nextFl = SL.find(x => !sel[x]) || "1F";
+    document.body.classList.remove("few"); draw(); ready();
+  }, 720);
+}
+
+// 図を、別の枠（1F・2F・3F、または使わない図）の上に落とす＝入れ替える
+function dropOn(file, t) {
+  const from = SL.find(x => sel[x] === file) || null, slot = t.dataset.slot || null;
+  if (slot) { const occ = sel[slot]; if (from) sel[from] = occ || null; sel[slot] = file; }
+  else if (from) sel[from] = t.dataset.f;
+  nextFl = SL.find(x => !sel[x]) || nextFl;
+  draw(); ready();
+}
+
+function draw(anim) {
+  const ims = cur.images.filter(im => !gone.has(im.file));
+  const byF = Object.fromEntries(ims.map(im => [im.file, im]));
+  const slots = SL.map(f => ({f, im: byF[sel[f]] || null}));   // 上から 1F・2F・3F の順（3Fは空いていてよい）
+  const used = new Set(slots.map(s => s.im && s.im.file));
+  const rest = ims.filter(im => !used.has(im.file));               // 使わない図は、その下
+  $("#thumbs").style.setProperty("--k", 3);
+  const one = (im, f, i) => im
+    ? `<div class="th ${f ? "on" : ""} ${anim ? "rise" : ""}" style="--d:${.15 + i * .07}s" draggable="true" data-f="${esc(im.file)}" ${f ? `data-slot="${f}"` : ""}>
+      <img src="${im.url}" alt="" draggable="false">${f ? `<span class="tag">${f}</span>` : ""}<button class="del" title="この図を外す" aria-label="この図を外す">${DELSVG}</button></div>`
+    : `<div class="th empty ${anim ? "rise" : ""}" style="--d:${.15 + i * .07}s" data-slot="${f}"><span class="tag">${f}</span></div>`;
+  $("#thumbs").innerHTML = ims.length ? [...slots.map((s, i) => one(s.im, s.f, i)), ...rest.map((im, i) => one(im, "", slots.length + i))].join("")
+    : `<p class="how">図がありません。右に PDF を置いてください</p>`;
+  document.querySelectorAll(".th").forEach(el => {
+    el.onclick = e => {
+      const f = el.dataset.f;
+      if (!f) return;
+      if (e.target.closest(".del")) { removeImg(f, el); return; }
+      if (document.body.classList.contains("few")) { document.body.classList.remove("few"); draw(true); return; }  // 縮小図をクリック＝選び直しを開く
+      if (el.dataset.slot) return;   // もう階に入っている図は、ドラッグで動かす
+      sel[nextFl] = f; nextFl = SL.find(x => !sel[x]) || "1F"; draw(); ready();   // 使わない図＝空いている階に入れる
+    };
+    el.ondragstart = e => { dragFile = el.dataset.f; dropped = false; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragFile); setTimeout(() => el.classList.add("drag"), 0); };
+    el.ondragover = e => { if (dragFile && dragFile !== el.dataset.f) { e.preventDefault(); el.classList.add("over"); } };
+    el.ondragleave = () => el.classList.remove("over");
+    el.ondrop = e => { e.preventDefault(); e.stopPropagation(); if (!dragFile || dragFile === el.dataset.f) return; dropped = true; const f = dragFile; dragFile = null; dropOn(f, el); };
+    el.ondragend = e => {   // どこにも落とさず、一覧の外へ出した＝外す
+      const f = dragFile; dragFile = null; el.classList.remove("drag", "out");
+      if (!f || dropped) return;
+      const r = $("#thumbs").getBoundingClientRect();
+      if (e.clientX < r.left - 10 || e.clientX > r.right + 10 || e.clientY < r.top - 10 || e.clientY > r.bottom + 10) removeImg(f, el);
+    };
+  });
+  $("#howT").textContent = "図を上から1階・2階の順に並べます（3階は、ある時だけ）　ドラッグで入れ替え、外に出すと外れます";
+}
+// ドラッグ中に一覧の外へ出たら、図をうすくして「外れる」ことを見せる
+document.addEventListener("dragover", e => {
+  const el = document.querySelector(".th.drag"); if (!el) return;
+  const r = $("#thumbs").getBoundingClientRect();
+  el.classList.toggle("out", e.clientX < r.left - 10 || e.clientX > r.right + 10 || e.clientY < r.top - 10 || e.clientY > r.bottom + 10);
+});
+
+/* 作図開始の箱：PDF・1F・2F・仕様がそろった時だけ出す */
+function ready() {
+  const ok = !!(cur && FLS().every(f => sel[f]) && chosen && stage === "spec");
+  const st = $("#start");
+  $("#back").disabled = !!running;
+  if (running) { st.classList.remove("hide"); st.disabled = true; return; }
+  st.classList.toggle("hide", !ok);
+  st.disabled = !ok; st.classList.remove("filled"); $("#state").classList.remove("busy"); $("#state").textContent = "";
+}
+
+/* 仕様のボタン：押した感（へこむ＋波紋）→ PDF とボタンが左へ流れ、仕様の選択窓と作図開始が右から入る */
+// 動きが終わったら次へ（終わりの合図が来ない時のために、時間でも必ず進める）
+const once = (el, fn, ms = 800) => {
+  let done = false; const go = () => { if (done) return; done = true; el.removeEventListener("animationend", h); fn(); };
+  const h = ev => { if (ev.target === el) go(); };
+  el.addEventListener("animationend", h); setTimeout(go, ms);
+};
+const CUSTOM = "カスタム";   // 壁の厚みを自分で決める仕様（一覧の最後）
+function drawSpecs() {
+  const names = [...specs.names, CUSTOM];
+  $("#specList").innerHTML = names.map((n, i) =>
+    `<button class="rise ${n === chosen ? "on" : ""} ${n === CUSTOM ? "cust" : ""}" style="--d:${.25 + i * .07}s" data-n="${esc(n)}">${esc(n)}${n === specs.current ? "<small>前回</small>" : ""}</button>`).join("");
+  $("#specList").querySelectorAll("button").forEach(x => x.onclick = () => {
+    chosen = x.dataset.n; $("#spec").value = chosen;
+    $("#specList").querySelectorAll("button").forEach(y => y.classList.toggle("on", y === x));
+    showCustom(chosen === CUSTOM);
+  });
+  showCustom(chosen === CUSTOM, true);
+}
+function showCustom(on, quiet) {
+  const C = $("#custom"), was = !C.classList.contains("hide");
+  C.classList.toggle("hide", !on); $("#nameBox").classList.toggle("hide", !on);
+  if (on && !was && !quiet) { replay(C, "inR2"); }
+  if (on) drawSect();
+}
+
+/* 壁の断面（上から見た図）：外から 外壁材・通気層・付加断熱・面材・柱・ボード。数字を変えると形が変わる */
+const val = k => Math.max(0, parseFloat($(`#custom [data-k=${k}]`).value) || 0);
+function drawSect(changed) {
+  const L = [["ext", "外壁"], ["air", "通気"], ["ins", "付加断熱"], ["osb", "面材"], ["col", "柱"], ["pb", "ボード"]].map(([k, n]) => ({k, n, t: val(k)}));
+  const tot = L.reduce((s, l) => s + l.t, 0) || 1, X0 = 40, W = 270, k = W / tot, y0 = 40, y1 = 200;
+  let x = X0, g = "", lab = "";
+  L.forEach((l, i) => {
+    const w = l.t * k, a = x, b = x + w, cls = changed === l.k ? ' class="bump"' : "";
+    if (l.k === "ext") g += `<rect${cls} x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="rgba(255,255,255,.22)" stroke="#fff" stroke-width="1"/>`;
+    if (l.k === "air") g += `<rect${cls} x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="none" stroke="#fff" stroke-width=".8" stroke-dasharray="3 3"/>`;
+    if (l.k === "ins") { let z = `M${a} ${y0}`; for (let yy = y0, s = 0; yy < y1; yy += 10, s ^= 1) z += ` L${s ? a : b} ${yy + 10}`;
+      g += `<g${cls}><rect x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="none" stroke="#fff" stroke-width="1"/><path d="${z}" fill="none" stroke="#fff" stroke-width=".7" opacity=".8"/></g>`; }
+    if (l.k === "osb") g += `<rect${cls} x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="rgba(255,255,255,.65)" stroke="#fff" stroke-width="1"/>`;
+    if (l.k === "col") g += `<g${cls}><rect x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="none" stroke="#fff" stroke-width="1.4"/>
+      <path d="M${a} ${y0} L${b} ${y1} M${b} ${y0} L${a} ${y1}" stroke="#fff" stroke-width=".7" opacity=".7"/>
+      <line x1="${(a + b) / 2}" y1="${y0 - 14}" x2="${(a + b) / 2}" y2="${y1 + 14}" stroke="#fff" stroke-width=".8" stroke-dasharray="10 3 2 3"/>
+      <text x="${(a + b) / 2 + 4}" y="${y0 + 14}">柱芯</text></g>`;
+    if (l.k === "pb") g += `<rect${cls} x="${a}" y="${y0}" width="${w}" height="${y1 - y0}" fill="rgba(255,255,255,.4)" stroke="#fff" stroke-width="1"/>`;
+    const up = L.slice(0, i).filter(q => q.t > 0).length % 2 === 0, tx = (a + b) / 2;
+    if (l.t > 0) lab += `<line x1="${tx}" y1="${up ? y0 : y1}" x2="${tx}" y2="${up ? y0 - 8 : y1 + 8}" stroke="#fff" stroke-width=".5" opacity=".6"/>
+      <text x="${tx}" y="${up ? y0 - 12 : y1 + 20}" text-anchor="middle">${l.n}</text>`;
+    x = b;
+  });
+  // 柱芯から外壁の面までの寸法線
+  const cx = X0 + (L[0].t + L[1].t + L[2].t + L[3].t + L[4].t / 2) * k, d = L[0].t + L[1].t + L[2].t + L[3].t + L[4].t / 2;
+  // 引き出し線（外壁の面・柱芯から下へ）＋寸法線＋端の点
+  const yd = y1 + 46, ex0 = y1 + 4, ex1 = yd + 6;   // 下の名前（通気・面材など）と重ならない高さ
+  const dim = `<g opacity=".9" stroke="#fff">
+    <line x1="${X0}" y1="${ex0}" x2="${X0}" y2="${ex1}" stroke-width=".6"/><line x1="${cx}" y1="${y1 + 16}" x2="${cx}" y2="${ex1}" stroke-width=".6"/>
+    <line x1="${X0}" y1="${yd}" x2="${cx}" y2="${yd}" stroke-width=".7"/>
+    <circle cx="${X0}" cy="${yd}" r="1.8" fill="#fff" stroke="none"/><circle cx="${cx}" cy="${yd}" r="1.8" fill="#fff" stroke="none"/>
+    <text x="${(X0 + cx) / 2}" y="${yd - 5}" text-anchor="middle" stroke="none" style="font-size:12px;fill:#fff">${+d.toFixed(1)}</text></g>`;
+  $("#sect").innerHTML = `<text x="6" y="${(y0 + y1) / 2}" style="writing-mode:vertical-rl">屋外</text><text x="${X0 + W + 14}" y="${(y0 + y1) / 2 + 4}">室内</text>` + g + lab + dim;
+  $("#toFace").textContent = +d.toFixed(1);
+}
+document.querySelectorAll("#custom [data-k]").forEach(el => el.addEventListener("input", () => drawSect(el.dataset.k)));
+
+/* 数字の上下：細い山形の矢印を、数字から少し離して縦に2つ（押すと 0.5 ずつ。0 より下には行かない） */
+const CHEV = d => `<svg viewBox="0 0 12 7" width="11" height="7"><path d="${d ? "M1 1 L6 6 L11 1" : "M1 6 L6 1 L11 6"}" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>`;
+document.querySelectorAll("#custom .nums input[type=number]").forEach(inp => {
+  const s = document.createElement("span"); s.className = "stp";
+  s.innerHTML = `<button type="button" tabindex="-1" aria-label="増やす">${CHEV(0)}</button><button type="button" tabindex="-1" aria-label="減らす">${CHEV(1)}</button>`;
+  inp.after(s);
+  s.querySelectorAll("button").forEach((b, i) => b.onclick = e => {
+    e.preventDefault();
+    const v = Math.max(0, (parseFloat(inp.value) || 0) + (i ? -.5 : .5));
+    inp.value = +v.toFixed(1); inp.dispatchEvent(new Event("input", {bubbles: true}));
+  });
+});
+document.querySelectorAll("#custom label.fixed .fv").forEach(f => { const s = document.createElement("span"); s.className = "stp"; f.after(s); });   // 柱：矢印はないが幅だけそろえる
+
+/* 石膏ボード：黒い下線の欄を押すと、すぐ下に暗い小さな一覧（なし／12.5）が開く。元の select は値の入れ物 */
+(() => {
+  const se = $("#pbIn"), w = document.createElement("span");
+  w.className = "dd";
+  w.innerHTML = `<button type="button" class="ddv"></button><span class="stp"><span class="ddc">${CHEV(1)}</span></span><span class="ddm">${[...se.options].map(o => `<button type="button" data-v="${o.value}">${o.text}</button>`).join("")}</span>`;
+  se.after(w); se.classList.add("hide");
+  const show = () => { w.querySelector(".ddv").textContent = se.options[se.selectedIndex].text; w.querySelectorAll(".ddm button").forEach(b => b.classList.toggle("on", b.dataset.v === se.value)); };
+  w.querySelector(".ddv").onclick = e => { e.preventDefault(); w.classList.toggle("open"); };
+  w.querySelector(".ddc").onclick = e => { e.preventDefault(); w.classList.toggle("open"); };
+  w.querySelectorAll(".ddm button").forEach(b => b.onclick = e => { e.preventDefault(); se.value = b.dataset.v; w.classList.remove("open"); show(); se.dispatchEvent(new Event("input", {bubbles: true})); });
+  document.addEventListener("click", e => { if (!w.contains(e.target)) w.classList.remove("open"); });
+  show();
+})();
+
+/* 付加断熱が 0 の時は、名前の横に「（なし）」と出す（数字と mm はそのまま） */
+$("#insIn").addEventListener("input", () => $("#insNo").classList.toggle("on", !(parseFloat($("#insIn").value) > 0)));
+
+
+
+/* すりガラスを断面図の位置に合わせる（断面図が見えている間だけ。動いている途中は追いかける） */
+function placeGlass() {
+  const g = $("#glass"), w = $("#custom");
+  const vis = w && !$("#custom").classList.contains("hide") && !$("#specPane").classList.contains("hide");
+  if (vis) {
+    const r = w.getBoundingClientRect(), px = 80, py = 70;
+    Object.assign(g.style, {left: r.left - px + "px", top: r.top - py + "px", width: r.width + px * 2 + "px", height: r.height + py * 2 + "px"});
+  }
+  g.classList.toggle("on", !!vis && !$("#specPane").classList.contains("outR"));
+  requestAnimationFrame(placeGlass);
+}
+requestAnimationFrame(placeGlass);
+// 白いボタンの押した感：一瞬へこんで戻る＋押した所から波紋（仕様を選択する・作図開始で共通）
+function pressFx(b, e) {
+  const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 2.2;
+  const x = e && e.clientX ? e.clientX - r.left : r.width / 2, y = e && e.clientY ? e.clientY - r.top : r.height / 2;
+  const rip = document.createElement("span"); rip.className = "rip";
+  rip.style.cssText = `width:${d}px;height:${d}px;left:${x - d / 2}px;top:${y - d / 2}px`;
+  b.appendChild(rip); setTimeout(() => rip.remove(), 600);
+  replay(b, "pressed");
+}
+// 場面の切り替え：PDF の画面（PDF＋仕様を選択する）⇔ 仕様の画面（仕様の窓＋作図を開始）。右下のボタンも一緒に入れ替わる
+function slide(outEls, outCls, inEls, inCls, mid) {
+  outEls.forEach(el => { el.classList.remove("inL", "inR", "show"); replay(el, outCls); });
+  once(outEls[0], () => {
+    outEls.forEach(el => { el.classList.add("hide"); el.classList.remove(outCls); });
+    if (mid) mid();
+    inEls.forEach(el => { el.classList.remove("hide", "outL", "outR"); replay(el, inCls); });
+  });
+}
+$("#specBtn").onclick = () => {
+  if (!(cur && FLS().every(f => sel[f]))) { alert(FLS().join("・") + " の図を選んでください"); return; }
+  const b = $("#specBtn"); b.classList.add("filled");   // 押すと左から白く塗る
+  chosen = chosen || (specs.names.includes(specs.current) ? specs.current : specs.names[0] || CUSTOM); $("#spec").value = chosen;
+  setTimeout(() => slide([$("#pick"), $("#specArea")], "outL", [$("#specPane"), $("#startArea")], "inR",
+    () => { b.classList.remove("filled"); stage = "spec"; drawSpecs(); ready(); }), 380);
+};
+$("#back").onclick = e => {
+  pressFx($("#back .c"), e);
+  slide([$("#specPane"), $("#startArea")], "outR", [$("#pick"), $("#specArea")], "inL", () => { stage = "pdf"; ready(); });
+};
+
+const OKF = f => /\.(pdf|png|jpe?g)$/i.test(f.name);   // 置けるもの：PDF・画像
+async function upload(f) {
+  if (!f || !OKF(f)) { alert("PDF か画像（PNG・JPG）を置いてください"); return; }
+  const msg = $("#drop .msg"); msg.innerHTML = "<b>読み込み中</b><small>図を取り出しています</small>";
+  try {
+    showPick(await api("/api/upload", {method: "POST", headers: {"X-Filename": encodeURIComponent(f.name)}, body: await f.arrayBuffer()}));
+  } catch (e) { alert(e.message); }
+  msg.innerHTML = "<b>PDF・画像をここに置く</b><small>PDF・PNG・JPG　／　クリックして選ぶこともできます</small>";
+}
+
+/* ドラッグ：ファイルを持って画面に入ったら枠を目立たせ、枠の上では「離して置く」 */
+const drop = $("#drop"); let depth = 0;
+const hasFile = e => [...(e.dataTransfer?.types || [])].includes("Files");
+drop.onclick = () => $("#file").click();
+$("#file").onchange = e => { const f = e.target.files[0]; e.target.value = ""; if (f) { replay(drop, "taken"); upload(f); } };
+document.addEventListener("dragenter", e => { if (!hasFile(e)) return; e.preventDefault(); depth++; document.body.classList.add("dragging"); });
+document.addEventListener("dragleave", e => { if (!hasFile(e)) return; if (--depth <= 0) { depth = 0; document.body.classList.remove("dragging"); } });
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); depth = 0; document.body.classList.remove("dragging"); drop.classList.remove("over"); });
+drop.addEventListener("dragover", e => { e.preventDefault(); if (!drop.classList.contains("over")) { drop.classList.add("over"); drop.querySelector("b").textContent = "離して置く"; } });
+drop.addEventListener("dragleave", e => { if (!drop.contains(e.relatedTarget)) { drop.classList.remove("over"); drop.querySelector("b").textContent = "PDF・画像をここに置く"; } });
+drop.addEventListener("drop", e => { drop.querySelector("b").textContent = "PDF・画像をここに置く"; replay(drop, "taken"); upload(e.dataTransfer.files[0]); });
+
+/* 右の枠：ここに置いた PDF の図を、左の一覧に加える（今の PDF は替えない。クリックでも選べる） */
+const drop2 = $("#drop2"), D2 = drop2.querySelector(".msg").innerHTML;
+async function addPdf(fs) {
+  const m = drop2.querySelector(".msg");
+  for (const f of fs) {
+    if (!OKF(f)) { alert("PDF か画像（PNG・JPG）を置いてください"); continue; }
+    m.innerHTML = "<b>読み込み中</b><small>図を取り出しています</small>";
+    try {
+      const r = await api("/api/upload", {method: "POST", headers: {"X-Filename": encodeURIComponent(f.name), "X-Plan": encodeURIComponent(cur.pdf)}, body: await f.arrayBuffer()});
+      if (f.name !== cur.pdf && !added.includes(f.name)) added.push(f.name);
+      cur.images = r.images || cur.images;
+      if (r.error) alert("図の取り出しで問題がありました：\n" + r.error);
+    } catch (e) { alert(e.message); }
+  }
+  m.innerHTML = D2;
+  $("#pname").innerHTML = [cur.pdf, ...added].map(n => `<span>${esc(n)}</span>`).join("");
+  document.body.classList.remove("few"); draw(true); ready();
+}
+drop2.onclick = () => $("#file2").click();
+$("#file2").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) addPdf(fs); };
+drop2.addEventListener("dragover", e => { e.preventDefault(); drop2.classList.add("over"); });
+drop2.addEventListener("dragleave", e => { if (!drop2.contains(e.relatedTarget)) drop2.classList.remove("over"); });
+drop2.addEventListener("drop", e => { drop2.classList.remove("over"); addPdf([...e.dataTransfer.files]); });
+
+$("#other").onclick = e => { pressFx($("#other .c"), e); cur = null; stage = "pdf"; $("#specPane").classList.add("hide"); $("#pick").classList.add("hide"); $("#specArea").classList.add("hide"); $("#startArea").classList.add("hide"); $("#put").classList.remove("hide"); $("#put").querySelectorAll(".rise").forEach(el => replay(el, "rise")); ready(); };
+
+/* 自分の部品集（.jww）：選んだら取り込んで、そのパスを覚える */
+let ownParts = null;
+$("#pOwn").onchange = () => $("#pFile").click();
+$("#pFile").onchange = async e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) { if (!ownParts) $("#pGen").checked = true; return; }
+  try {
+    const r = await api("/api/parts", {method: "POST", headers: {"X-Filename": encodeURIComponent(f.name)}, body: await f.arrayBuffer()});
+    ownParts = r.path; $("#pName").textContent = r.name;
+  } catch (er) { alert(er.message); $("#pGen").checked = true; }
+};
+
+/* 自分で入れた数字（壁の厚み・建具の部品） */
+function customBody() {
+  const c = {name: $("#cName").value.trim(), parts: $("#pOwn").checked ? ownParts : "generic"};
+  ["ext", "air", "ins", "osb", "col", "pb"].forEach(k => c[k] = val(k));
+  return c;
+}
+/* 保存する：作図とは関係なく、名前を付けて仕様に保存（次から一覧に出る） */
+$("#saveSpec").onclick = async e => {
+  const m = $("#saveMsg"), c = customBody();
+  m.className = "nmsg";
+  if (!c.name) { m.classList.add("ng"); m.textContent = "名前を入れてください"; $("#cName").focus(); return; }
+  if ($("#pOwn").checked && !ownParts) { m.classList.add("ng"); m.textContent = "部品集（.jww）を選んでください"; return; }
+  try {
+    const r = await api("/api/save_spec", {method: "POST", body: JSON.stringify(c)});
+    if (!new URLSearchParams(location.search).has("demo")) { specs = r.specs; drawSpecs(); }
+    m.classList.add("ok"); m.textContent = `✓「${r.name}」を保存しました`;
+  } catch (er) { m.classList.add("ng"); m.textContent = er.message; }
+};
+$("#cName").addEventListener("input", () => { const m = $("#saveMsg"); if (m.classList.contains("ok")) { m.className = "nmsg"; m.textContent = ""; } });
+$("#start").onclick = async () => {
+  const st = $("#start"); st.classList.add("filled");   // 押すと左から白く塗る
+  const unfill = () => st.classList.remove("filled");
+  const body = {pdf: cur.pdf, img1: sel["1F"], img2: sel["2F"], spec: chosen};
+  if (sel["3F"]) body.img3 = sel["3F"];
+  if (chosen === CUSTOM) {  // 入れた数字で作図（保存はしない。保存は「保存する」ボタンで別に）
+    if ($("#pOwn").checked && !ownParts) { unfill(); alert("部品集（.jww）を選んでください"); return; }
+    body.spec = null; body.custom = customBody();
+  }
+  try {
+    await api("/api/start", {method: "POST", body: JSON.stringify(body)});
+    runMeta = `${cur.pdf}　／　仕様：${chosen === CUSTOM ? "カスタム" : chosen}`;
+    $("#res").classList.add("hide"); document.body.classList.remove("result");
+    enterRun(true); poll();
+  } catch (er) { unfill(); alert(er.message); }
+};
+$("#openOut").onclick = () => api("/api/open", {method: "POST", body: JSON.stringify({path: outDir})});
+
+/* ===== 作成中・完了のページ ===== */
+let runMeta = "", rowEls = {}, lastPv = "", lastView = null, finishedShown = false, savedDir = null, pollTimer = null, clockOff = 0;
+const CKSVG = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 12.5 L10 17.5 L19 7" fill="none" stroke="#0b0d11" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const fmt = s => s < 60 ? `${s.toFixed(1)}秒` : `${Math.floor(s / 60)}分${String(Math.floor(s % 60)).padStart(2, "0")}秒`;
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function enterRun(anim) {
+  stage = "run"; finishedShown = false; savedDir = null; lastPv = ""; rowEls = {}; lastView = null;
+  $("#rows").innerHTML = ""; $("#rTitle").dataset.t = "";
+  ["#rLinks", "#files", "#dest", "#saveArea", "#logwrap"].forEach(s => $(s).classList.add("hide"));
+  $("#plot").classList.remove("hide"); $("#saveLbl").textContent = "保存先を選ぶ";
+  document.body.classList.add("running");
+  const after = () => { ["#put", "#pick"].forEach(s => $(s).classList.add("hide")); $("#specArea").classList.add("hide"); ready(); };
+  if (anim) slide([$("#specPane"), $("#startArea")], "outL", [$("#runPage")], "inR", after);
+  else { ["#put", "#pick", "#specPane", "#specArea", "#startArea"].forEach(s => $(s).classList.add("hide")); $("#runPage").classList.remove("hide"); ready(); }
+}
+
+async function poll(first) {
+  clearTimeout(pollTimer);
+  let j;
+  try { j = await api("/api/status"); } catch (e) { pollTimer = setTimeout(poll, 1500); return; }
+  running = !!j.running;
+  if (first) { if (!j.running) { ready(); return; } if (stage !== "run") enterRun(false); }
+  if (stage === "run" && j.view) renderRun(j);
+  if (j.running) { pollTimer = setTimeout(poll, 700); return; }
+  ready();
+  if (stage === "run" && j.done && !finishedShown) { finishedShown = true; finishRun(j); }
+}
+
+function renderRun(j) {
+  const v = j.view; lastView = v; clockOff = v.now * 1000 - Date.now();
+  const T = $("#rTitle");
+  if (T.dataset.t !== v.title) { T.dataset.t = v.title; T.innerHTML = esc(v.title) + (v.finished || v.failed ? "" : '<span class="dt"><i>.</i><i>.</i><i>.</i></span>'); }
+  $("#rMeta").textContent = runMeta || `${j.name}　／　仕様：${specs.current}`;
+  $("#rTotL").textContent = v.live_total ? "経過" : "合計";
+  v.rows.forEach(r => {
+    let el = rowEls[r.id];
+    if (!el) {
+      el = document.createElement("div");
+      el.innerHTML = r.kind === "tr" ? "<span></span>" : '<div class="pr-ic"></div><div class="pr-nm"><span class="t"></span><span class="dt"><i>.</i><i>.</i><i>.</i></span></div><div class="pr-fl"></div><div class="pr-tm"></div>';
+      $("#rows").appendChild(el); rowEls[r.id] = el;
+    }
+    if (r.kind === "tr") { el.className = "pr-tr" + (r.on ? " on" : ""); el.firstChild.textContent = r.label; return; }
+    el.className = "pr-row " + r.state + (r.id === "fin" ? " fin" : "");
+    el.querySelector(".t").textContent = r.label;
+    const ic = el.querySelector(".pr-ic"), want = r.state === "done" ? "ck" : "";
+    if (ic.dataset.k !== want) { ic.dataset.k = want; ic.innerHTML = want ? CKSVG : ""; }
+    el.querySelector(".pr-fl").innerHTML = r.dots ? r.dots.map(d => `<span><i class="${d.on ? "on" : d.go ? "cur" : ""}"></i>${d.fl}</span>`).join("") : "";
+    el.dataset.sec = r.sec; el.dataset.live = r.live ? r.live * 1000 : ""; el.dataset.state = r.state;
+  });
+  if (!finishedShown || v.failed) {
+    const pv = v.preview, key = pv.kind + pv.fl + (pv.url || "");
+    if (key !== lastPv) { lastPv = key; setPreview(pv, v); }
+  }
+  tick();
+}
+
+function setPreview(pv, v) {
+  const gl = $("#pGlow"), sc = $("#pScan"), pl = $("#pPlot"), sw = $("#pSweep"), ed = $("#pEdge"), fl = pv.fl.slice(0, -1) + "階";
+  if (pv.kind === "scan") {
+    if (pv.url && sc.dataset.u !== pv.url) { sc.dataset.u = pv.url; sc.src = pv.url; gl.src = pv.url; }
+    sc.classList.add("on"); sw.classList.add("on"); gl.classList.add("on"); pl.classList.remove("show"); ed.classList.remove("run");
+    const drawing = v.rows.some(r => r.id.startsWith("draw_") && r.state === "now");
+    $("#rCap").innerHTML = `図面<b>${fl}</b>${drawing ? "を作図しています" : "を読み取っています"}`;
+  } else {
+    sc.classList.remove("on"); sw.classList.remove("on"); gl.classList.remove("on"); pl.classList.remove("show"); ed.classList.remove("run"); void pl.offsetWidth;
+    pl.onload = () => { pl.classList.add("show"); ed.classList.add("run"); };
+    pl.src = pv.url;
+    $("#rCap").innerHTML = `図面<b>${fl}</b>ができました`;
+  }
+}
+
+function tick() {
+  const nowS = Date.now() + clockOff;
+  document.querySelectorAll("#rows .pr-row").forEach(el => {
+    const live = el.dataset.live ? (nowS - parseFloat(el.dataset.live)) / 1000 : 0;
+    const s = parseFloat(el.dataset.sec || 0) + Math.max(0, live);
+    el.querySelector(".pr-tm").textContent = el.dataset.state === "pend" ? "—" : fmt(s);
+  });
+  if (lastView) {
+    const s = lastView.total + (lastView.live_total ? Math.max(0, (nowS - lastView.now * 1000) / 1000) : 0);
+    $("#rTotV").textContent = mmss(s);
+  }
+}
+setInterval(tick, 200);
+
+function finishRun(j) {
+  const v = j.view;
+  showResult(j);   // 検査の詳細（画像・記録）は、下に用意しておく
+  $("#rLinks").classList.remove("hide");
+  if (v.failed) {
+    $("#logwrap").classList.remove("hide");
+    const L = $("#log"); L.innerHTML = j.log.map(t => `<div>${esc(t)}</div>`).join(""); L.scrollTop = L.scrollHeight;
+    return;
+  }
+  setTimeout(() => showFiles(v), 1400);   // 全部のチェックが付いてから、右半分を納品のファイルに替える
+}
+
+function showFiles(v) {
+  $("#plot").classList.add("hide");
+  $("#rCap").textContent = "できた図面";
+  $("#files").innerHTML = v.files.map((f, i) => {
+    // 合格は書かない。直す所・確かめる所がある時だけ出す
+    const label = f.ng ? `直す所 ${f.ng}` : f.warn ? `確かめる所 ${f.warn}` : "";
+    return `<div class="ficon rise" style="--d:${i * .12}s;--w:${i * .35}s" draggable="true" data-url="${esc(f.url)}" data-name="${esc(f.name)}"><div class="doc2"><span class="dclip"><span class="dsw"></span></span><span>jww</span></div>
+      <div class="nm2">${esc(f.name.replace(/\.jww$/i, ""))}</div><div class="okb ${f.ng ? "ng" : ""} ${label ? "" : "hide"}">${label}</div></div>`;
+  }).join("");
+  document.querySelectorAll(".ficon").forEach(el => el.addEventListener("dragstart", e => {   // ドラッグして、好きなフォルダ・デスクトップへ落とせる
+    e.dataTransfer.setData("DownloadURL", `application/octet-stream:${el.dataset.name}:${location.origin}${el.dataset.url}`);
+    e.dataTransfer.effectAllowed = "copy";
+  }));
+  $("#files").classList.remove("hide"); $("#dest").classList.remove("hide");
+  $("#saveArea").classList.remove("hide"); replay($("#saveArea"), "inR");
+}
+
+$("#saveBtn").onclick = async () => {
+  const b = $("#saveBtn"), lb = $("#saveLbl");
+  if (savedDir) { api("/api/open_saved", {method: "POST", body: "{}"}).catch(e => alert(e.message)); return; }
+  b.disabled = true; lb.textContent = "選んでいます…";
+  try {
+    const r = await api("/api/save", {method: "POST", body: "{}"});
+    if (r.canceled) lb.textContent = "保存先を選ぶ";
+    else {
+      savedDir = r.dir; $("#destV").textContent = r.dir; $("#destM").textContent = `✓ ${r.files.length}つ保存しました`;
+      document.querySelectorAll(".ficon .okb").forEach(x => { x.textContent = "✓ 保存しました"; x.classList.remove("ng", "hide"); });
+      lb.textContent = "フォルダを開く";
+    }
+  } catch (er) { alert(er.message); lb.textContent = "保存先を選ぶ"; }
+  b.disabled = false;
+};
+$("#toRes").onclick = () => { $("#res").classList.remove("hide"); document.body.classList.add("result"); $("#res").scrollIntoView({behavior: "smooth"}); };
+$("#again").onclick = () => location.reload();
+
+function showResult(j) {   // 検査の詳細（下の欄）。「検査の詳細を見る」を押すまで隠しておく
+  outDir = j.result ? j.result.out : outDir; $("#outPath").textContent = outDir || "";
+  if (!j.result) return;
+  $("#floors").innerHTML = j.result.floors.map((f, k) => {
+    const v = !f.jww ? `<span class="verdict none">できていません</span>` : f.ng ? `<span class="verdict ng">検査　直す所 ${f.ng}</span>`
+      : f.warn ? `<span class="verdict">検査　合格（確かめる所 ${f.warn}）</span>` : `<span class="verdict">検査　合格</span>`;
+    const t = Date.now();
+    return `<div class="floor rise" style="--d:${.2 + k * .15}s"><h3>${f.fl}${v}</h3>
+      ${f.check_img ? `<figure><figcaption>検査で見つかった所（赤丸＝直す、橙丸＝確かめる）</figcaption><img src="${f.check_img}&t=${t}"></figure>` : ""}
+      ${f.check_log && (f.ng || f.warn) ? `<pre>${esc(f.check_log)}</pre>` : ""}
+      ${f.images.map(i => `<figure><figcaption>${esc(i.label)}</figcaption><a href="${i.url}" target="_blank"><img src="${i.url}&t=${t}"></a></figure>`).join("")}</div>`;
+  }).join("");
+}
+init();
+</script>
+</body>
+</html>

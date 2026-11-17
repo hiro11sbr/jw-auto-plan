@@ -51,26 +51,16 @@ def images_of(name):
     for p in sorted(d.glob("p*_x*_*.png")):
         m = re.match(r"p(\d+)_x(\d+)_(\d+)x(\d+)\.png", p.name)
         if m:
-            out.append({"file": p.name, "page": int(m[1]), "xref": int(m[2]), "w": int(m[3]), "h": int(m[4]),
+            out.append({"file": p.name, "page": int(m[1]), "xref": int(m[2]), "w": int(m[3]), "h": int(m[4]), "size": p.stat().st_size,
                         "url": "/file?p=" + urllib.parse.quote(str(p.relative_to(ROOT)))})
     out.sort(key=lambda r: (r["page"], r["xref"]))
     return out
 
 
 def guess(imgs):
-    """1F＝2ページ目、2F＝3ページ目の最初の図（今までのプラン1〜5はすべてこの並び）"""
-    pick = {}
-    for fl, page in (("1F", 2), ("2F", 3)):
-        c = [r for r in imgs if r["page"] == page]
-        if c:
-            pick[fl] = c[0]["file"]
-    c3 = [r for r in imgs if r["page"] == 4]
-    if c3:
-        pick["3F"] = c3[0]["file"]   # 3階建ての時だけ使う（画面で「3階建て」を選んだ時）
-    if len(pick) < 2 and len(imgs) >= 2:  # 並びが違うPDF：大きい順の2枚をページ順に
-        big = sorted(sorted(imgs, key=lambda r: -r["w"] * r["h"])[:2], key=lambda r: (r["page"], r["xref"]))
-        pick = {"1F": big[0]["file"], "2F": big[1]["file"]}
-    return pick
+    """どの図が1階・2階かは、プログラムでは決めない。取り出した図をすべて見せて、人（画面）が選ぶ。
+    （クロにデータを渡した時は、クロが選ぶ）"""
+    return {}
 
 
 IMG_EXT = (".png", ".jpg", ".jpeg")
@@ -296,7 +286,7 @@ def progress(j, now):
             if f.get("jww"):
                 pth = dirs(plan)[1] / f"{f['fl']}.jww"
                 files.append({"fl": f["fl"], "name": deliver_name(f["fl"]), "size": pth.stat().st_size if pth.exists() else 0,
-                              "ng": f.get("ng"), "warn": f.get("warn"), "read": f.get("read", 0),
+                              "ng": f.get("ng"), "warn": f.get("warn"),
                               "url": f"/download?plan={urllib.parse.quote(plan)}&fl={f['fl']}"})
     return {"rows": rows, "title": "途中で止まりました" if failed else ("完了" if finished else "作成中"), "failed": failed,
             "finished": finished, "total": round((ended or now) - t_start, 1) if t_start else 0, "live_total": bool(running),
@@ -403,18 +393,6 @@ def run_job(pdf_name, imgs, spec):
                 f["ng"], f["warn"] = (int(m[1]), int(m[2])) if m else (None, None)
                 if ci.exists():
                     f["check_img"] = "/file?p=" + urllib.parse.quote(str(ci.relative_to(ROOT)))
-            # 読み取りの検査（run_all.ps1 が判定のあとに出す）：確定ではなく「見てほしい所」
-            rj, rp = mid / f"{fl}_読み取りの検査.json", out / f"{fl}_読み取りの検査.png"
-            f.update(read=0, read_msgs=[], read_fix=[], read_img=None)
-            if rj.exists():
-                try:
-                    d = json.loads(rj.read_text(encoding="utf-8"))
-                    f["read_msgs"] = [str(x.get("msg", "")) for x in d.get("疑い", [])]
-                    f["read"], f["read_fix"] = len(f["read_msgs"]), [str(x) for x in d.get("自動修正", [])]
-                except Exception:
-                    pass
-            if f["read"] and rp.exists():
-                f["read_img"] = "/file?p=" + urllib.parse.quote(str(rp.relative_to(ROOT)))
             res["floors"].append(f)
         job["T"]["check_end"] = time.time()
         ok = p.returncode == 0 and all(f["jww"] for f in res["floors"])
