@@ -1211,24 +1211,18 @@ def shift_entrance_doors(placements, walls, cfg, runs=()):
                       for fh, c, fa, fb in stor)
         d = -hinge_dir if storage else hinge_dir
         hc = cfg["column"]["size_mm"] / 2
-        if not storage:
-            # 吊り元側の枠の端を、壁端の柱の面から sh（200）離す（user 11/15。「200ずらす」だと、ドアの幅によっては
-            # 柱に食い込んだ：プラン1 1F の W1126）
-            gap = cfg["placement"].get("entrance_hinge_gap_mm", sh)  # 150（user 11/15。200から変更）
-            target = (w.b - hc - gap) if hinge_dir > 0 else (w.a + hc + gap)
-            move = target - hi if hinge_dir > 0 else target - lo
-        else:
-            move = d * sh
-            # 戸先側へずらす時も、壁端の柱の面（壁端から65）に枠が食い込まない範囲までにする
-            edge = hc + 12.5
-            room = (w.b - edge - hi) if d > 0 else (lo - (w.a + edge))
-            if room < sh:
-                move = d * max(0.0, room)
+        # 寄せる側（収納なし＝吊り元側、吊り元側に玄関収納あり＝戸先側）の枠の端を、壁端の柱の面から 150 離す
+        # （user 11/15。「200ずらす」だと、ドアの幅によっては柱に食い込んだ：プラン1 1F の W1126。
+        #  収納ありの時も同じく戸先側の柱の面から 150：以前は元の位置から 200 ずらしていて、柱に付いた。
+        #  プラン6 1F、user 11/17）
+        gap = cfg["placement"].get("entrance_hinge_gap_mm", sh)  # 150（user 11/15。200から変更）
+        target = (w.b - hc - gap) if d > 0 else (w.a + hc + gap)
+        move = target - hi if d > 0 else target - lo
         x, y = pl["pos"]
         pl["pos"] = (x + move, y) if h else (x, y + move)
         pl["span"] = (lo + move, hi + move)
         if storage:
-            print(f"玄関ドアを戸先側へ{abs(move):g}ずらす（{bay}の間、吊り元側に玄関収納あり）: {lo:.1f} -> {lo + move:.1f}")
+            print(f"玄関ドアの戸先側の枠を、柱の面から{gap:g}離す（{bay}の間、吊り元側に玄関収納あり）: {lo:.1f} -> {lo + move:.1f}")
         else:
             print(f"玄関ドアの吊り元側の枠を、柱の面から{gap:g}離す（{bay}の間、吊り元側に玄関収納なし）: {lo:.1f} -> {lo + move:.1f}")
 
