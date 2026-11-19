@@ -15,7 +15,7 @@ usage: check_conditions.py <図.jww> <_meta.json> [検査画像.png]
   H 青線    室内建具に青（色6）の線がない
   I 環境    環境設定（参考図面の .JWF）の色が入っている
   J 形式    部品がブロックになっていない
-  K メーカー 部品は決めたメーカー（docs/メーカー品を使う手順.md）と汎用だけ
+  K メーカー 部品は YKK AP とパナソニックだけ
   L 窓位置  窓の枠の厚みの真ん中が、付加断熱の外面にある
 NG のある所は、まわりを切り出した画像（赤丸つき）を1枚にまとめて書く。
 """
@@ -71,6 +71,10 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
     fl = L.get("fitting", L["wall"])["layer"]
     wl = L["wall"]["layer"]
     cl = L["center"]["layer"]
+    # 線の種類ごとの色・レイヤーの指定（仕様の line_styles）を反映した実効値で線を見分ける。指定がなければ今と同じ
+    import line_styles as ls_
+    lv = ls_.check_values(cfg)
+    FLS, PURPLE, WL, COLL, CL = lv["fit_layers"], lv["purple"], lv["wall_layer"], lv["column_layer"], lv["center_layer"]
     mm = lambda x, y: (x * S + cx, y * S + cy)  # noqa: E731
     lines, arcs = [], []  # (p, q, layer, color) / (centre, r, a0, da, layer, color)
     for e in doc["entities"]:
@@ -81,7 +85,7 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             arcs.append((mm(e["center_x"], e["center_y"]), e["radius"] * S, e["start_angle"], e["arc_angle"], b["layer"], b["pen_color"]))
     ng, warn = [], []  # (記号, 説明, (x, y))
 
-    fit = [l for l in lines if l[2] == fl]
+    fit = [l for l in lines if l[2] in FLS]
     FA = np.array([[l[0][0], l[0][1], l[1][0], l[1][1]] for l in fit], float).reshape(-1, 4)
     used = np.zeros(len(fit), bool)
     # 開口部の中心線（出入りできる開口、ドア芯から200ずつ。user 11/15）：部品の線と同じに数える。ないものは NG（N）
@@ -102,7 +106,7 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
     # 柱：対角線2本（長さ＝柱の対角）の交点
     diag = cfg["column"]["size_mm"] * math.sqrt(2)
     cols = {(round((p[0] + q[0]) / 2), round((p[1] + q[1]) / 2)) for p, q, la, _ in lines
-            if la == wl and abs(math.hypot(q[0] - p[0], q[1] - p[1]) - diag) < 1.0 and abs(abs(q[0] - p[0]) - abs(q[1] - p[1])) < 1.0}
+            if la == COLL and abs(math.hypot(q[0] - p[0], q[1] - p[1]) - diag) < 1.0 and abs(abs(q[0] - p[0]) - abs(q[1] - p[1])) < 1.0}
     # 片引戸の開口側の半分（中方立まで＋60）：ここには柱を置けないので G を見ない（user 11/13）
     mull = []
     for pl in meta["placements"]:
@@ -110,10 +114,17 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             _, _, _, _, W_, off_, _ = lib[pl["block"]]
             t_ = tr_fn(pl, S)
             mull.append((t_(off_ / S, 0), t_((off_ + W_ / 2 + 150) / S, 0)))
+    slide_boxes = []  # 引戸の部品の範囲（戸袋を含む）
+    for pl in meta["placements"]:
+        if ("引戸" in pl["word"] or "引違い戸" in pl["word"]) and pl["block"] in lib:
+            t_ = tr_fn(pl, S)
+            ps_ = [t_(e[k + "_x"], e[k + "_y"]) for e in lib[pl["block"]][1] if e["type"] == "LINE" for k in ("start", "end")]
+            if ps_:
+                slide_boxes.append((pl["horizontal"], min(p[0] for p in ps_), min(p[1] for p in ps_), max(p[0] for p in ps_), max(p[1] for p in ps_)))
     rects = []  # (pl, word, 枠の四角（縮めたもの）, 中心)
     for pl in meta["placements"]:
         name, word = pl["block"], pl["word"]
-        if not name.startswith(("汎用_",)):  # 汎用＝配布用の自分で数字を入れる仕様（11/14）
+        if not name.startswith(("YKK AP", "パナソニック", "汎用_")):  # 汎用＝配布用の自分で数字を入れる仕様（11/14）
             ng.append(("K", f"メーカー: {name}", tuple(pl["pos"])))
         if name not in lib:
             ng.append(("A", f"部品集にない: {name}", tuple(pl["pos"])))
@@ -169,7 +180,7 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
                     miss, missing = 0, []
                     break
         if geom is not None and miss and miss < 0.9 * len(P):
-            geom.setdefault("missing", []).extend(missing)
+            geom.setdefault("missing", []).extend((p_, q_, bb_, word) for p_, q_, bb_ in missing)  # 建具の種類も渡す（line_styles）
         if miss:
             ng.append(("A", f"{word} W{W}: 部品の線 {miss}/{len(P)} 本が、置き方の位置にない", centre))
         ys = [y for *_, y0, y1 in P for y in (y0, y1)]
@@ -214,7 +225,7 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             for u in (off + 12.5, off + W - 12.5):
                 ua = alo(tr(u / S, 0))
                 # 壁を横切る向きの紫線で、along がこの位置（±20）、壁芯の±250の中にあるもの
-                rets = [(p, q) for p, q, la, col in lines if la != fl and col == 5 and p != q
+                rets = [(p, q) for p, q, la, col in lines if la not in FLS and col in PURPLE and p != q
                         and abs(alo(p) - alo(q)) < 0.3 and abs(alo(p) - ua) < 20
                         and min(acr(p), acr(q)) < pl["line"] + 250 and max(acr(p), acr(q)) > pl["line"] - 250]
                 if not rets:
@@ -253,9 +264,13 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             for t in (math.floor((lo - hc + 0.01) / grid) * grid, math.ceil((hi + hc - 0.01) / grid) * grid):
                 pt = (t, pl["line"]) if pl["horizontal"] else (pl["line"], t)
                 # 壁のない所（壁芯の線が通っていない交点）は見ない（プラン5 1F (2275,10920)：壁は 2730 から）
-                if not any(seg_dist(pt, p, q) < 2 for p, q, la, _ in lines if la == cl):
+                if not any(seg_dist(pt, p, q) < 2 for p, q, la, _ in lines if la == CL):
                     continue
                 if any(seg_dist(pt, a_, b_) < hc for a_, b_ in mull):
+                    continue
+                # 直交する壁の引戸（戸袋を含む枠の範囲）の上は柱を置かない（user 11/18：プラン1 1F (3640,7735)）
+                if any(h_ != pl["horizontal"] and x0_ - hc <= pt[0] <= x1_ + hc and y0_ - hc <= pt[1] <= y1_ + hc
+                       for h_, x0_, y0_, x1_, y1_ in slide_boxes):
                     continue
                 if not any(abs(c[0] - pt[0]) <= 2 and abs(c[1] - pt[1]) <= 2 for c in cols):
                     warn.append(("G", f"{word} W{W}: 脇のグリッド交点 ({pt[0]:g},{pt[1]:g}) に柱がない", pt))
@@ -279,25 +294,25 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
             continue
         seg = LineString([p, q])
         mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
-        if la != fl and col == 5:
+        if la not in FLS and col in PURPLE:
             for pl, word, W, purple, *_ in rects:
                 if not purple.is_empty and seg.intersects(purple) and seg.intersection(purple).length > 1.0:
                     c_ = seg.intersection(purple).centroid
                     ng.append(("C", f"{word} W{W}（置き方 {pl['pos'][0]:.0f},{pl['pos'][1]:.0f}）: 紫線が枠の中に {seg.intersection(purple).length:.0f} 入っている", (c_.x, c_.y)))
-        if la == wl and col != 5:
+        if la == WL and col not in PURPLE:
             for pl, word, W, _, wallbox, _, _ in rects:
                 if seg.intersects(wallbox) and seg.intersection(wallbox).length > 3.0:
                     along_wall = (abs(q[0] - p[0]) > abs(q[1] - p[1])) == pl["horizontal"]
                     if along_wall:
                         c_ = seg.intersection(wallbox).centroid
                         ng.append(("D", f"{word} W{W}（置き方 {pl['pos'][0]:.0f},{pl['pos'][1]:.0f}）: 壁の線が建具の中を {seg.intersection(wallbox).length:.0f} 通っている", (c_.x, c_.y)))
-        if la == fl and col == 6:
+        if la in FLS and col == 6:
             inside = [word for pl, word, W, _, _, whole, _ in rects if whole.contains(seg)]
             if inside and all(w in INTERIOR for w in inside):
                 ng.append(("H", f"{inside[0]}: 青（色6）の線がある", mid))
     # E 円弧の両端
     for c, r, a0, da, la, col in arcs:
-        if la != fl or r < 300 or abs(da) < math.radians(30):
+        if la not in FLS or r < 300 or abs(da) < math.radians(30):
             continue
         for a in (a0, a0 + da):
             pt = (c[0] + r * math.cos(a), c[1] + r * math.sin(a))
@@ -314,7 +329,7 @@ def check(jww, meta_path, cfg, lib, img_out=None, quiet=False, geom=None):
         ng.append(("J", "部品がブロックになっている", (cx, cy)))
 
     if geom is not None:
-        geom.update(rects=rects, wl=wl, fl=fl, S=S, center=(cx, cy))
+        geom.update(rects=rects, wl=WL, fl=fl, fls=FLS, purple=PURPLE, S=S, center=(cx, cy))
     if img_out and (ng or warn):
         sheet(lines, arcs, ng + warn, len(ng), img_out)
     if not quiet:

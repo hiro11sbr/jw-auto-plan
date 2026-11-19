@@ -170,6 +170,55 @@ def half_arcs(dark, o):
     return best
 
 
+def count_leaves(bgr, o, ic):
+    """引き戸の戸の枚数：戸1枚＝厚みの2本線の組。開いた所（帯に灰色がない所）で、通り芯から見た1本目の線の
+    位置が変わる所で区切り、同じ位置が続く区間を1枚と数える（プラン6 1F ゲストルーム：-5px の組と -2px の組
+    → 2枚。user 11/17）。戸袋（灰色の壁がある所）は数えない。"""
+    p0, p1, c = o["px"]
+    h = o["horizontal"]
+    hw = ic.get("leaf_half_px", 7)
+    ci = int(round(c))
+    H, W = bgr.shape[:2]
+    sigs = []
+    for q in range(int(p0) + 2, int(p1) - 1):
+        if h:
+            prof = bgr[ci - hw:ci + hw + 1, q] if 0 <= q < W else None
+        else:
+            prof = bgr[q, ci - hw:ci + hw + 1] if 0 <= q < H else None
+        if prof is None or len(prof) != 2 * hw + 1:
+            continue
+        v = prof.mean(axis=1)
+        neutral = (np.abs(prof[:, 0] - prof[:, 1]) <= 12) & (np.abs(prof[:, 1] - prof[:, 2]) <= 12)
+        if (neutral & (v > 150) & (v < 215)).sum() >= 2:
+            sigs.append(None)  # 灰色の壁（戸袋・袖壁）
+            continue
+        d = np.nonzero(v < 110)[0]
+        sigs.append(int(d[0]) if len(d) >= 2 else None)
+    # 同じ位置が続く区間（1px のぶれは同じとみる）
+    runs = []
+    for s in sigs:
+        if s is None:
+            if runs and runs[-1][0] is not None:
+                runs.append([None, 1])
+            continue
+        if runs and runs[-1][0] is not None and abs(runs[-1][0] - s) <= 1:
+            runs[-1][1] += 1
+        else:
+            runs.append([s, 1])
+    total = sum(n for s, n in runs if s is not None)
+    if total < 10:
+        return 0
+    leaves = [r for r in runs if r[0] is not None and r[1] >= ic.get("leaf_min_frac", 0.2) * total]
+    # 続けて同じ位置の区間（途中に中心の直交線などが入っただけ）は1枚
+    n = 0
+    last = None
+    for s, _n in leaves:
+        if last is None or abs(s - last) > 1:
+            n += 1
+        last = s
+    return n
+
+
 def gap_only(o, M):
     """The opening without its pocket (the wall gap only), for a sliding_pocket."""
     gp = o.get("gap_pocket_px")
@@ -299,7 +348,14 @@ def main():
             _fan, stagger, full, _span = cues(dark, int(og["px"][0]), int(og["px"][1]), float(og["px"][2]),
                                               og["horizontal"], 0, cfg["window_type"])
             need = ic["kamachi_min_full_lines"] if og is o else ic["kamachi_pocket_min_full_lines"]
-            if stagger == 0 and full >= need:
+            if o["kind"] == "sliding" and o["width_mm"] > cfg["opening_detection"].get("sliding_gap_max_mm", 99999):
+                # 戸1枚より広く、戸のずれ（引違いの段）もない：框。帯の片側は壁の線と重なり、線は1本でよい
+                # （プラン6 1F SIC 1189。user 11/17）
+                need = ic["kamachi_pocket_min_full_lines"]
+            # 框の白い帯は通り芯からずれる（プラン6 1F SIC -5.5px。建具は ±3.5px 以内。user 11/17）
+            off_ = o.get("white_off_px")
+            shifted = off_ is not None and abs(off_) >= ic.get("kamachi_white_off_px", 99)
+            if (stagger == 0 and full >= need) or shifted:
                 if og is not o:
                     o.update({k: og[k] for k in ("px", "p1_mm", "p2_mm", "width_mm")})
                     o["pocket"], o["outset"] = None, False
@@ -414,6 +470,13 @@ def main():
             print(f"折戸: {i} 幅{round(o['width_mm'])} 斜線{pos}/{neg} V字は{ends}")
         elif report:
             print(f"  {i} {o['kind']} 幅{round(o['width_mm'])} 斜線{pos}/{neg}")
+    for i, o in enumerate(ops):
+        if o["kind"] == "sliding_pocket" and not o.get("rejected") and not o.get("outset"):
+            n = count_leaves(bgr, o, ic)
+            if n:
+                o["leaves"] = n
+                if n >= 2:
+                    print(f"引き戸の戸の枚数: {i} 幅{round(o['width_mm'])} → {n}枚")
     json.dump(ops, open(ops_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     if cut:
         json.dump(det, open(walls_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

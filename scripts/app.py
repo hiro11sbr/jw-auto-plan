@@ -145,12 +145,45 @@ def save_custom(c):
             raise ValueError(f"「{name}」は前からある仕様なので上書きしません。別の名前にしてください")
     nums = [str(float(c.get(k, 0))) for k in ("ext", "air", "ins", "osb", "col", "pb")]
     parts = c.get("parts") or "generic"
-    cmd = [str(PY), "-3.13", "-I", str(HERE / "custom_spec.py"), name, *nums, "--parts", *([parts] if isinstance(parts, str) else parts)]
+    wet = c.get("wet") or {}
+    wet = {k: v for k, v in wet.items() if isinstance(v, dict) and v.get("maker")}
+    extra = ["--wet", json.dumps(wet, ensure_ascii=False)] if wet else []
+    lines = {k: v for k, v in (c.get("lines") or {}).items() if isinstance(v, dict) and any(x not in (None, "") for x in v.values())}
+    if lines:   # 詳細設定（線の色・線種・レイヤ）
+        extra += ["--lines", json.dumps(lines, ensure_ascii=False)]
+    cmd = [str(PY), "-3.13", "-I", str(HERE / "custom_spec.py"), name, *nums, *extra, "--parts", *([parts] if isinstance(parts, str) else parts)]
     r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
     if r.returncode != 0:
         err = decode(r.stderr).strip().splitlines()
         raise ValueError("仕様を保存できませんでした：" + (err[-1] if err else "不明"))
     return name
+
+
+_wet_cache = {}
+
+
+def wet_catalog():
+    """水回りの部品の一覧（custom_spec.py が部品集のブロック名から作る）。1回作ったら覚えておく"""
+    if "v" not in _wet_cache:
+        r = subprocess.run([str(PY), "-3.13", "-I", str(HERE / "custom_spec.py"), "--catalog"], cwd=str(ROOT),
+                           capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
+        try:
+            _wet_cache["v"] = json.loads(decode(r.stdout))
+        except ValueError:
+            return {}
+    return _wet_cache["v"]
+
+
+def line_env():
+    """詳細設定の一覧（色・線種・レイヤ・種類ごとの既定）。custom_spec.py が作る"""
+    if "line" not in _wet_cache:
+        r = subprocess.run([str(PY), "-3.13", "-I", str(HERE / "custom_spec.py"), "--lineenv"], cwd=str(ROOT),
+                           capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
+        try:
+            _wet_cache["line"] = json.loads(decode(r.stdout))
+        except ValueError:
+            return {}
+    return _wet_cache["line"]
 
 
 def dirs(name):
@@ -435,6 +468,13 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/state":
             pdfs = sorted(p.name for p in (ROOT / "01_入力").glob("*.pdf"))
             return self.send(200, {"specs": specs(), "pdfs": pdfs})
+        if u.path == "/api/wet":  # 水回りの部品の一覧（キッチン・洗面台・浴室・便器：メーカー → 商品 → 大きさ）
+            return self.send(200, wet_catalog())
+        if u.path == "/api/ping":  # 画面が開いている合図（--auto-exit の時だけ使う）
+            LAST_PING["t"] = time.time()
+            return self.send(200, {"ok": True})
+        if u.path == "/api/lines":  # 詳細設定の一覧（線の色・線種・レイヤ）
+            return self.send(200, line_env())
         if u.path == "/api/status":
             with lock:
                 j = dict(job, log=job["log"][-400:], elapsed=round(time.time() - job["started"]) if job["started"] else 0)
@@ -561,10 +601,33 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
 
+LAST_PING = {"t": None, "start": time.time()}
+
+
+def auto_exit_watch(idle_after, idle_first):
+    """窓なしで起動した時（--auto-exit）：ブラウザの画面が閉じられたら、プログラムも終わる。
+    画面は10秒ごとに /api/ping を送る。最後の ping から idle_after 秒たったら終了。一度も届かないまま idle_first 秒たっても終了。
+    作図中は終わらない"""
+    while True:
+        time.sleep(5)
+        with lock:
+            busy = job["running"]
+        if busy:
+            continue
+        now = time.time()
+        last = LAST_PING["t"]
+        if (last is not None and now - last > idle_after) or (last is None and now - LAST_PING["start"] > idle_first):
+            print("画面が閉じられたので、終わります")
+            os._exit(0)
+
+
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     url = f"http://127.0.0.1:{PORT}/"
     print(f"画面：{url}（この黒い窓を閉じると終わります）")
+    if "--auto-exit" in sys.argv:
+        idle = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--idle=")), "120"))
+        threading.Thread(target=auto_exit_watch, args=(idle, max(idle, 300)), daemon=True).start()
     if "--no-browser" not in sys.argv:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     srv.serve_forever()

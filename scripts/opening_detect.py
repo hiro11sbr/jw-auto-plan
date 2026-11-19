@@ -171,6 +171,9 @@ def detect(img, cfg, det):
     half = oc["band_half_px"]
     v = img.astype(int).mean(axis=2)
     img_dark = v < 110
+    _ii = img.astype(int)
+    img_white = (np.abs(_ii[:, :, 0] - _ii[:, :, 1]) <= 12) & (np.abs(_ii[:, :, 1] - _ii[:, :, 2]) <= 12) \
+        & (v > cfg["grid_detection"].get("white_min_value", 235))
     lo, hi = det["gray_range"]
     mid, w = (lo + hi) / 2, cfg["grid_detection"]["gray_halfwidth"]
     gray_range = (mid - w, mid + w)
@@ -277,6 +280,10 @@ def detect(img, cfg, det):
                 # Only lines inside the wall band count: a box drawn against the wall face
                 # (e.g. a 370L unit) would otherwise look like a leaf running on.
                 inner = [o for o in lines if abs(o) <= oc["pocket_line_max_offset_px"]] or lines
+                # 片引戸の開いた所の幅は戸1枚分（全プランで 840 以下）。それより広い所に戸袋を探さない：
+                # 框の2本線が壁の面の線へ続いて、戸袋と見誤った（プラン6 1F、開いた所 1189。user 11/17）
+                if (p1 - p0 + 1) * mmpp > oc.get("sliding_gap_max_mm", 99999):
+                    inner = []
                 ext = {}
                 for o in inner:
                     oi = o + half
@@ -290,8 +297,8 @@ def detect(img, cfg, det):
 
                     lim = int(length_px * 1.3)
                     ext[o] = (p0 - leaf_extent(drawn, p0, -1, lim), leaf_extent(drawn, p1, 1, lim) - p1)
-                before = max(e_[0] for e_ in ext.values())
-                after = max(e_[1] for e_ in ext.values())
+                before = max((e_[0] for e_ in ext.values()), default=0)
+                after = max((e_[1] for e_ in ext.values()), default=0)
                 if max(before, after) >= oc["pocket_min_ratio"] * length_px:
                     kind = "sliding_pocket"
                     pocket = "before" if before >= after else "after"
@@ -321,6 +328,28 @@ def detect(img, cfg, det):
                         solid_ = [o_ for o_ in cov if cov[o_] > 0.8]
                         if len(dashed) == 1 and len(solid_) == 1:
                             pocket_face = 1 if dashed[0] > 0 else -1
+                    if oc.get("pocket_face_by_white", False):
+                        # 戸袋の所の壁の帯は、戸がしまわれる側だけが白く、残りは灰色（壁）。白い側が引き込み面
+                        # （線を追うより確か。プラン6 1F 洗面所：-6〜-2px が白、0〜+4px が灰色。user 11/17）
+                        rng = range(p0 - before + 3, p0 - 3) if pocket == "before" else range(p1 + 4, p1 + after - 2)
+                        cc = int(round(c))
+                        wn = {-1: 0, 1: 0}
+                        rows = 0
+                        for q in rng:
+                            if not (0 <= q < (img.shape[1] if h else img.shape[0])):
+                                continue
+                            prof = img_white[cc - half:cc + half + 1, q] if h else img_white[q, cc - half:cc + half + 1]
+                            if len(prof) != 2 * half + 1:
+                                continue
+                            rows += 1
+                            # 帯の中だけ（壁の外の部屋の床は見ない）：中心から±wh px
+                            wh = oc.get("pocket_white_half_px", 7)
+                            wn[-1] += int(prof[half - wh:half - 1].sum())
+                            wn[1] += int(prof[half + 2:half + wh + 1].sum())
+                        if rows >= 5:
+                            a_, b_ = wn[-1] / rows, wn[1] / rows
+                            if max(a_, b_) >= 2 and max(a_, b_) >= 2 * min(a_, b_) + 1:
+                                pocket_face = -1 if a_ > b_ else 1
                     # アウトセット片引戸：戸袋の側の壁が薄くなっていない（帯の太さが壁のまま）。ふつうの
                     # 片引戸は戸袋の所で壁の帯が半分ほどに細い（user 11/14、プラン5 2F：15px と 1〜6px）
                     pk_pos = [q for q in (range(p0 - before + 3, p0 - 3) if pocket == "before" else range(p1 + 4, p1 + after - 2))
@@ -353,6 +382,18 @@ def detect(img, cfg, det):
             else:
                 kind = "open"
             width_mm = (p1 - p0 + 1) * mmpp
+            # 開いた所の白い帯の中心が、通り芯から何px ずれているか（建具は通り芯の上、框はずれる。user 11/17）
+            g0, g1 = p0, p1
+            if pocket_px:
+                g0, g1 = (p1 - pocket_px[0] + 1, p1) if pocket == "before" else (p0, p0 + pocket_px[0] - 1)
+            cc_ = int(round(c))
+            cents = []
+            for q in range(int(g0) + 3, int(g1) - 2):
+                prof = img_white[cc_ - half:cc_ + half + 1, q] if h else img_white[q, cc_ - half:cc_ + half + 1]
+                if len(prof) == 2 * half + 1 and prof.sum() >= 3:
+                    idx_ = np.nonzero(prof)[0]
+                    cents.append((idx_.min() + idx_.max()) / 2 - half)
+            white_off = round(float(np.median(cents)), 1) if len(cents) >= 5 else None
             reason = None
             if kind in ("text", "open", "joinery"):
                 reason = kind
@@ -376,6 +417,7 @@ def detect(img, cfg, det):
                 "hinge_px": int(hinge_p) if hinge_p is not None and arc >= oc["hinge_arc_min"] else None,
                 "swing_side": swing_side if hinge_p is not None and arc >= oc["hinge_arc_min"] else None,
                 "pocket": pocket, "gap_pocket_px": pocket_px, "pocket_face": pocket_face, "outset": outset,
+                "white_off_px": white_off,
             })
     # A fitting never sits on a line with no wall centre (user, 2026-10-22): fittings missed
     # here mean the wall judgement must improve, so storage_fronts() is off by default.

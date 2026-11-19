@@ -64,6 +64,8 @@ foreach ($fl in $floors) {
     # 2a. 便器の形でトイレを見つける（文字が読めなくても。2畳以下の区画、2026-10-24）
     & $py -3.13 -I "$d\scripts\toilet_detect.py" $img[$fl] "$mid\${fl}_walls.json" "$mid\${fl}_部屋名.json" $cfg | Select-Object -Last 1
     & $py -3.13 -I "$d\scripts\koshikabe_detect.py" $img[$fl] "$mid\${fl}_walls.json" $cfg "$mid\$fl"
+    # 2b. 下がり壁（グリッド上の点線2本、芯振り分け。作図では壁を外して点線で描く。user 11/18）
+    & $py -3.13 -I "$d\scripts\sagari_detect.py" $img[$fl] "$mid\${fl}_walls.json" $cfg "$mid\$fl"
     # 3. 建具の判定（壁に沿って画素単位）
     & $py -3.13 -I "$d\scripts\opening_detect.py" $img[$fl] "$mid\${fl}_walls.json" $cfg "$mid\$fl"
     # 3b. 窓の記号（16020H・06011T・16011TF・11905F など）を読んで窓の種類と幅を付ける（判定結果は変えない）

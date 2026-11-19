@@ -117,49 +117,87 @@ def column_states(rgb, gray_range, cfg, centers, positions, horizontal):
                     j += 1
                 if j < len(fill) and fill[j] and not (v[i:j] < 100).any():
                     fill[i:j] = True
-        st = "none"
-        # gray run covering the center
-        tol = g["center_tol_px"]
-        tol_ext = g["center_tol_ext_px"]
-        idx = [i for i in range(half - tol_ext, half + tol_ext + 1) if fill[i]]
-        idx.sort(key=lambda i: abs(i - half))
-        if idx:
-            i = idx[0]
-            a = i
-            while a > 0 and fill[a - 1]:
-                a -= 1
-            e = i
-            while e < len(fill) - 1 and fill[e + 1]:
-                e += 1
-            t = e - a + 1
-            mid = (a + e) / 2
-            # a drawn wall has a black outline on both faces; shaded ground / eaves do not
-            ow = g["outline_search_px"]
-            outlined = ow == 0 or (edge_dark[max(0, a - ow):a].any() and edge_dark[e + 1:e + 1 + ow].any())
-            omax = g.get("outline_max_px", 0)  # 試験中（10/30）：輪郭線の太さの上限。0 = 見ない
-            if outlined and omax:
-                def thin_line(start, step):
-                    # the first dark run within ow px of the band edge, and its width
-                    i = start
-                    while 0 <= i < len(edge_dark) and abs(i - start) < ow and not edge_dark[i]:
-                        i += step
-                    n = 0
-                    while 0 <= i < len(edge_dark) and edge_dark[i]:
-                        n += 1
-                        i += step
-                    return 0 < n <= omax
-                outlined = thin_line(a - 1, -1) and thin_line(e + 1, 1)
-            if gray[a:e + 1].sum() >= 0.5 * t and outlined:
-                tmax = cfg["wall_detection"]["thickness_px"][1]
-                tmin = g["int_min_thickness_px"]  # thin partitions (e.g. toilet) are ~5px
-                ext_min = cfg["wall_detection"]["exterior_min_thickness_px"]
-                # exterior bands are drawn shifted outward by up to ~4px, so they get a wider tolerance
-                if tmin <= t < ext_min and abs(mid - half) <= tol:
-                    st = "int"
-                elif ext_min <= t <= tmax and abs(mid - half) <= tol_ext:
-                    st = "ext"
-                elif t > tmax:
-                    st = "blob"
+        # 文字の所（clean_text.py が見つけた文字の画素）を、この列の帯の上で
+        tmp = None
+        if TEXT_MASK is not None:
+            tmp = TEXT_MASK[ci - half:ci + half + 1, pi] if horizontal else TEXT_MASK[pi, ci - half:ci + half + 1]
+            if len(tmp) != len(fill):
+                tmp = None
+        fill0 = fill.copy()
+        if tmp is not None and g.get("text_bridge_wall", False):
+            # 灰色の帯の途中に文字が重なっても、両側が灰色なら壁のまま（プラン6 1F クローゼットの右の壁に
+            # 「ト」の縦棒が重なり、壁が切れて折れ戸が置けなかった。user 11/17）
+            i = 0
+            while i < len(fill):
+                if not fill[i] and tmp[i]:
+                    j = i
+                    while j < len(fill) and not fill[j] and tmp[j]:
+                        j += 1
+                    if i > 0 and j < len(fill) and fill[i - 1] and fill[j]:
+                        # つないだ後の帯が壁の厚さを超えるなら、つながない（プラン5 2F：バルコニーの
+                        # 灰色の床と壁が文字でつながり、壁が消えた）
+                        a_ = i - 1
+                        while a_ > 0 and fill[a_ - 1]:
+                            a_ -= 1
+                        e_ = j
+                        while e_ < len(fill) - 1 and fill[e_ + 1]:
+                            e_ += 1
+                        if e_ - a_ + 1 <= cfg["wall_detection"]["thickness_px"][1]:
+                            fill[i:j] = True
+                    i = j
+                else:
+                    i += 1
+        def wall_state(fill):
+            st = "none"
+            # gray run covering the center
+            tol = g["center_tol_px"]
+            tol_ext = g["center_tol_ext_px"]
+            idx = [i for i in range(half - tol_ext, half + tol_ext + 1) if fill[i]]
+            idx.sort(key=lambda i: abs(i - half))
+            if idx:
+                i = idx[0]
+                a = i
+                while a > 0 and fill[a - 1]:
+                    a -= 1
+                e = i
+                while e < len(fill) - 1 and fill[e + 1]:
+                    e += 1
+                t = e - a + 1
+                mid = (a + e) / 2
+                # a drawn wall has a black outline on both faces; shaded ground / eaves do not
+                ow = g["outline_search_px"]
+                outlined = ow == 0 or (edge_dark[max(0, a - ow):a].any() and edge_dark[e + 1:e + 1 + ow].any())
+                omax = g.get("outline_max_px", 0)  # 試験中（10/30）：輪郭線の太さの上限。0 = 見ない
+                if outlined and omax:
+                    def thin_line(start, step):
+                        # the first dark run within ow px of the band edge, and its width
+                        i = start
+                        while 0 <= i < len(edge_dark) and abs(i - start) < ow and not edge_dark[i]:
+                            i += step
+                        n = 0
+                        while 0 <= i < len(edge_dark) and edge_dark[i]:
+                            n += 1
+                            i += step
+                        return 0 < n <= omax
+                    outlined = thin_line(a - 1, -1) and thin_line(e + 1, 1)
+                if gray[a:e + 1].sum() >= 0.5 * t and outlined:
+                    tmax = cfg["wall_detection"]["thickness_px"][1]
+                    tmin = g["int_min_thickness_px"]  # thin partitions (e.g. toilet) are ~5px
+                    ext_min = cfg["wall_detection"]["exterior_min_thickness_px"]
+                    # exterior bands are drawn shifted outward by up to ~4px, so they get a wider tolerance
+                    if tmin <= t < ext_min and abs(mid - half) <= tol:
+                        st = "int"
+                    elif ext_min <= t <= tmax and abs(mid - half) <= tol_ext:
+                        st = "ext"
+                    elif t > tmax:
+                        st = "blob"
+            return st
+        st = wall_state(fill0)
+        if st == "none" and g.get("text_bridge_wall", False) and tmp is not None and (fill != fill0).any():
+            # 文字でつないだ帯は、つながないと壁にならない時だけ使う（プラン5 2F：外壁の上の文字を
+            # つなぐと帯の中心がずれ、外壁が消えた）
+            st = wall_state(fill)
+        fill = fill0
         if st == "none":
             # 腰壁: a wall-wide band drawn as two outlines with white between (not filled)
             for k in range(g["koshi_half_min_px"], g["koshi_half_max_px"] + 1):
@@ -176,6 +214,32 @@ def column_states(rgb, gray_range, cfg, centers, positions, horizontal):
                 fh = g["fitting_half_px"]
                 tm = TEXT_MASK[ci - fh:ci + fh + 1, pi] if horizontal else TEXT_MASK[pi, ci - fh:ci + fh + 1]
                 on_text = bool(tm.any())
+                if on_text and g.get("text_on_lines_only", False):
+                    # 文字がかかっているかは、黒い線の上とそのすぐ脇（±1px）だけで見る。帯の端にある文字（線から
+                    # 離れた「物入」の字）は数えない（プラン6 2F 物入の両開き、user 11/18）
+                    near = np.convolve(band.astype(int), np.ones(3, int), mode="same") > 0
+                    on_text = bool((tm.astype(bool) & near).any())
+            if on_text and tmp is not None and g.get("fitting_white_frac"):
+                # 建具の所は背景が白い（部屋は色付き）。文字が重なっても、文字と線を除いた帯がほぼ白なら建具
+                # （user 11/17）。土間収納などの文字は、色の付いた床の上にある
+                fh = g["fitting_half_px"]
+                sl = slice(half - fh, half + fh + 1)
+                need = 4
+                if g.get("fitting_white_between_lines", False):
+                    # 白は、建具の外側の2本の線の間だけで測る（決まった幅で測ると、白い帯が細い建具では端に床の色が
+                    # 入って白が足りなくなった：プラン6 2F 物入の両開き 69%。user 11/18）
+                    dk = np.where(dark[sl] & ~tmp[sl].astype(bool))[0]
+                    if len(dk) >= 2 and dk[-1] - dk[0] >= 3:
+                        sl = slice(half - fh + dk[0] + 1, half - fh + dk[-1])
+                        need = 2
+                white = neutral[sl] & (v[sl] > g.get("white_min_value", 235))
+                rest = ~(dark[sl] | tmp[sl].astype(bool) | (v[sl] < 160))
+                if rest.sum() >= need and (white & rest).sum() >= g["fitting_white_frac"] * rest.sum():
+                    # 線は文字でない所だけで数える（文字の画を建具の線と数えない。プラン1 1F・プラン3 2F：
+                    # 階段の上の文字で、ない引き戸が出た）
+                    band_nt = band & ~tmp[half - fh:half + fh + 1].astype(bool)
+                    lines = np.count_nonzero(np.diff(np.concatenate(([0], band_nt.astype(int)))) == 1)
+                    on_text = False
             if lines >= 2 and not fill[half] and not on_text:
                 st = "fit"
         out.append(st)
@@ -245,6 +309,9 @@ def judge_edges(rgb, fits, gray_range, cfg):
     return edges
 
 
+_MEAN_CACHE = {}
+
+
 def through_lines(rgb, c, p0, p1, horizontal, cfg, gray_range):
     """Positions (px along the line) of thin lines that cross a strip on BOTH sides of line c at
     the same place: stair treads running through a stair's centre line. A door frame or storage
@@ -253,7 +320,12 @@ def through_lines(rgb, c, p0, p1, horizontal, cfg, gray_range):
     g = cfg["grid_detection"]
     d0, d1 = g["stair_strip_px"]
     dark = g["stair_dark_max"]
-    v = rgb.astype(int).mean(axis=2) if rgb.ndim == 3 else rgb
+    # 画像全体の明るさは1回だけ計算して使い回す（区間ごとに計算し直していて、とても遅かった。11/19）
+    key = id(rgb)
+    if _MEAN_CACHE.get("key") != key:
+        _MEAN_CACHE["key"] = key
+        _MEAN_CACHE["v"] = rgb.astype(int).mean(axis=2) if rgb.ndim == 3 else rgb
+    v = _MEAN_CACHE["v"]
     H, W = v.shape
     ci = int(round(c))
     sides = []
@@ -428,7 +500,11 @@ def classify(edges, cfg):
             # clear fitting and a wall on the same line: the fitting runs on to that wall (user 11/17)
             return bool(e and e["cls"] == "none" and not e.get("stair")
                         and e["f"].get("text", 0) >= g.get("fitting_text_only_frac", 0.9)
-                        and beyond and beyond["cls"] == "wall")
+                        and beyond and (beyond["cls"] == "wall"
+                                        # 先が建具らしい辺でもよい（プラン1 2F 洋室Aのクローゼット：「15823」の文字の下の
+                                        # 折戸。先の辺は建具線 0.56。user 11/18 の 91）
+                                        or (g.get("fitting_text_gap_to_fit", False)
+                                            and beyond["f"]["fit"] >= g["fitting_weak_frac"])))
 
         def growable(e, first):
             if not e or e["cls"] != "none" or e.get("stair"):
@@ -451,8 +527,24 @@ def classify(edges, cfg):
             for d in (1, -1):
                 path = []
                 t = st + d
+                def hidden_to_crossing(t, d=d, strong=strong):
+                    # 文字で隠れた1辺（建具線＋文字がほぼ全部、建具線も少し見える）の先が、直交する壁の節点
+                    # （プラン6 2F 物入の両開き：「物入」の文字で片側の辺が切れ、両開きが消えた。user 11/18 の 71）
+                    e = row.get(t)
+                    if not (g.get("fitting_text_grow_crossing", False) and e and e["cls"] == "none" and not e.get("stair")):
+                        return False
+                    f = e["f"]
+                    if f["fit"] + f.get("text", 0) < g.get("fitting_text_only_frac", 0.9) or f.get("text", 0) <= 0:
+                        return False
+                    # 元の建具がはっきりしているか、この辺にも建具の線が少し見えること（文字だけの辺を、はっきり
+                    # しない建具から延ばすと、物入の真ん中の「物入」の文字が壁になった。user 11/18）
+                    if not (strong or f["fit"] >= g["fitting_text_min_fit"]):
+                        return False
+                    return crossing_wall(h, ln, t + 1 if d == 1 else t)
+
                 while len(path) < g["fitting_grow_max_edges"] and (
-                        (strong and growable(row.get(t), not path)) or (not path and text_gap(row.get(t), row.get(t + d)))):
+                        (strong and growable(row.get(t), not path)) or (not path and text_gap(row.get(t), row.get(t + d)))
+                        or (not path and hidden_to_crossing(t))):
                     path.append(t)
                     node = t + 1 if d == 1 else t  # grid node at the far end of edge t
                     if row.get(t + d, {}).get("cls") in ("wall", "koshi") or crossing_wall(h, ln, node):
@@ -495,6 +587,37 @@ def classify(edges, cfg):
                 return e_
         return None
 
+    def infer_end_wall(h, ln, node):
+        """建具の端（点 (node, ln)）から、直交する通り（node）に沿って両向きに最大 infer_end_max_edges 区間たどり、
+        途中の区間が「壁・建具・腰壁・文字」でほぼ埋まり（文字が少しはある）、その先に壁（同じ通りの壁か
+        直交する壁）があれば、その区間の並びを返す（そこに文字で隠れた仕切り壁がある）。なければ None"""
+        rowc = lines.get((not h, node), {})
+        if float(ln).is_integer():
+            firsts = {-1: int(ln) - 1, 1: int(ln)}
+        else:
+            firsts = {-1: math.floor(ln), 1: math.floor(ln)}
+        best = None
+        for d in (-1, 1):
+            path, s = [], firsts[d]
+            for _k in range(g.get("infer_end_max_edges", 2)):
+                e_ = rowc.get(s)
+                if not e_ or e_.get("stair"):
+                    break
+                if e_["cls"] in solid:
+                    break
+                f_ = e_["f"]
+                if f_["int"] + f_["ext"] + f_["fit"] + f_.get("koshi", 0) + f_.get("text", 0) < g.get("infer_end_min_cover", 0.8):
+                    break
+                path.append(e_)
+                far = s if d == -1 else s + 1
+                if (crossing_wall(not h, node, far) or rowc.get(s + d, {}).get("cls") == "wall") and \
+                        any(p["f"].get("text", 0) >= g.get("hidden_wall_min_text", 0.3) for p in path):
+                    if best is None or len(path) < len(best):
+                        best = list(path)
+                    break
+                s += d
+        return best
+
     solid = ("wall", "wall_fit")
     # pass 1: fittings between solid walls; pass 2: also fittings that end on another fitting
     # counted as wall in pass 1 (e.g. a storage front ending on a sliding-door pocket)
@@ -535,10 +658,35 @@ def classify(edges, cfg):
                     e_ = hidden_end(h, ln, steps[j] + 1)
                     right_ok = e_ is not None
                     hid += [e_] if e_ else []
-                ok = left_ok and right_ok and j - i + 1 <= maxrun
+                # はっきり読めた建具の端が壁につながらない時は、建具の方から仕切り壁を推測する（user 11/18 の 96：
+                # プラン1 2F 洋室(B)のクローゼット。仕切り壁に「15823」の字が乗って壁と読めず、折戸が消えた）
+                inferred = []
+                run_ = [row[t] for t in steps[i:j + 1]]
+                clear_run = (g.get("infer_end_wall", False) and len(run_) >= 2
+                             and sum(r_["f"]["fit"] for r_ in run_) / len(run_) >= g.get("infer_end_min_fit", 0.8))
+                if clear_run and not left_ok:
+                    p_ = infer_end_wall(h, ln, steps[i])
+                    left_ok = p_ is not None
+                    inferred += p_ or []
+                if clear_run and not right_ok:
+                    p_ = infer_end_wall(h, ln, steps[j] + 1)
+                    right_ok = p_ is not None
+                    inferred += p_ or []
+                hid += inferred
+                # 推測しても壁が見つからない時：はっきり読めた建具は、片方の端が壁につながっていれば建具だけ描く
+                # （user 11/19 の 96：仕切り壁の推測は誤りを生んだので、建具だけでよい）
+                one_end = bool(g.get("clear_fit_one_end", False) and len(run_) >= 2
+                               and sum(r_["f"]["fit"] for r_ in run_) / len(run_) >= g.get("infer_end_min_fit", 0.8)
+                               and (left_ok or right_ok))
+                ok = (left_ok and right_ok or one_end) and j - i + 1 <= maxrun
+                if ok:
+                    for e_ in inferred:
+                        e_["inferred"] = True
                 if ok:
                     for e_ in hid:
                         e_["cls"], e_["ext"], e_["completed"] = "wall_fit", False, True
+                    for e_ in inferred:
+                        e_["cls"] = "wall"  # 推測した仕切り壁は、建具でなく壁
                 ext = bool(left and left["cls"] == "wall" and left["ext"] and right and right["cls"] == "wall"
                            and right["ext"])
                 for t in steps[i:j + 1]:
@@ -653,7 +801,11 @@ def classify_staged(edges, cfg):
             # or a line in a kitchen counter (プラン3 1F) must not beat the closet front
             # (a fitting between exterior walls, a window in the outline, is settled too: プラン4
             # 2F's window lost to a stair's side line on the 227.5 line beside it)
-            if e["cls"] == "wall" or (k == 0 and e["cls"] in solid) or (e["cls"] == "wall_fit" and e.get("ext")):
+            # （910 の段階でも、室内の建具らしい列は決めない：プラン1 2F 洋室Aのクローゼットの棚の線が 910 の通りで
+            # 先に決まり、隣の 227.5 の通りの本当の折戸が消えた。user 11/18 の 91）
+            early_fit = k == 0 and e["cls"] in solid and not (g.get("staged_open_interior_fit", False)
+                                                                and e["cls"] == "wall_fit" and not e.get("ext"))
+            if e["cls"] == "wall" or early_fit or (e["cls"] == "wall_fit" and e.get("ext")):
                 settled[id(e)] = (e["cls"], e.get("ext", False))
         print(f"  段階{k + 1}（{['910', '455', '227.5'][k]}）: 壁 {sum(e['cls'] == 'wall' for e in part)} "
               f"建具 {sum(e['cls'] == 'wall_fit' for e in part)}")
@@ -819,6 +971,22 @@ def settle_outline(edges, cfg):
                 parent[root(i)] = root(owner[n])
             else:
                 owner[n] = i
+    # 227.5 の通りの端は、直交する壁の辺の途中に当たる（節点にならない）：その壁とつながっているとみなす
+    # （プラン1 2F 洋室Aのクローゼットの折戸 y=5232.5 が、両側の壁から浮いた島として消えた。user 11/18 の 91）
+    if g.get("island_half_join", False):
+        for i, e in enumerate(live):
+            if e["cls"] != "wall_fit":
+                continue  # 建具の列だけ（家具の灰色が壁の途中に付いて残った：プラン6 2F WIC、user 11/18）
+            for n in edge_line(e):
+                n = tuple(map(float, n))
+                if float(n[0]).is_integer() and float(n[1]).is_integer():
+                    continue
+                for j, f in enumerate(live):
+                    if j == i or f["h"] == e["h"]:
+                        continue
+                    (a, b) = edge_line(f)
+                    if LineString([tuple(map(float, a)), tuple(map(float, b))]).distance(Point(n)) < 1e-6:
+                        parent[root(i)] = root(j)
     comps = {}
     for i, e in enumerate(live):
         comps.setdefault(root(i), []).append(e)

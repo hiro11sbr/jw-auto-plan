@@ -46,7 +46,9 @@ WORDS = ("片開き", "片引戸", "引違い戸", "両開き", "折戸", "UBド
          "縦すべり+FIX窓", "玄関片開き", "玄関親子", "アウトセット片引戸")
 WINDOWS = {"引違い窓", "縦すべり窓", "FIX窓", "横すべり窓", "縦すべり+FIX窓"}
 OUTWARD = WINDOWS | {"玄関片開き", "玄関親子"}  # exterior toward local +y, reference point outside
-HINGE_RIGHT = {"縦すべり窓", "縦すべり+FIX窓", "UBドア"}  # pivot drawn at the right end (LIXIL 縦すべり; the user's UB door)
+HINGE_RIGHT = {"縦すべり窓", "UBドア"}  # pivot drawn at the right end (LIXIL 縦すべり; the user's UB door)
+# 縦すべり+FIX窓 の部品は、吊り元（弧の中心）が左端（x≈125–150）にある。右端扱いにしていて開く側が逆だった
+# （プラン1 2F 洋室A、user 11/18 の 94）
 NO_HINGE = {"引違い窓", "FIX窓", "横すべり窓", "片引戸", "引違い戸", "アウトセット片引戸"}
 # アウトセット片引戸：壁を削らずに、壁の表面に後から付ける引戸。戸袋の側の壁が薄くならない（user 11/14）。
 # 開口（910の柱間なら W1320、それより広ければ W1580）の両脇に柱が入る
@@ -111,7 +113,7 @@ def _load_one(path, offsets):
               and abs(e["start_y"] - e["end_y"]) < 1e-6 and abs(e["end_x"] - e["start_x"]) * S > w / 2]
         inner = min(ys) * S if ys else 0.0
         if any(f"_{w_}_" in name for w_ in WINDOWS):
-            # 窓：枠の室内側の面＝部品の線の一番室内側（メーカーの窓の枠は左右の脚が奥まで入るので、長い横線だけでは
+            # 窓：枠の室内側の面＝部品の線の一番室内側（YKKの枠は左右の脚が奥まで入るので、長い横線だけでは
             # 足りず、壁の戻り線が窓にはみ出した、user 11/13）
             ally = [y * S for e in b["entities"] if e["type"] == "LINE" for y in (e["start_y"], e["end_y"])]
             inner = min(ally) if ally else inner
@@ -196,6 +198,14 @@ def parts_for(o, lib, bay=None, small_door=None):
         # a 片引戸's pocket half runs inside the wall beyond the visible opening: the bay does
         # not limit it; it is placed from the jamb the door starts at (プラン2 1F 脱衣所, 10/25)
         bay = None
+        # 戸の枚数（2本線の組の数、interior_type.count_leaves）：3枚以上は部品がない（user 11/17）。
+        # 2枚は 2枚連動片引戸だけから選ぶ
+        if o.get("leaves", 1) >= 3:
+            return []
+        if o.get("leaves", 1) == 2:
+            two = [v for v in lib.values() if "_2枚連動片引戸_" in v[0]]
+            if two:
+                return [min(two, key=lambda v: abs(v[4] - o["width_mm"]))]
     if o["kind"] == "entrance_door":
         # no columns at the entrance door (user 10/23), so the bay does not limit it: プラン2's
         # ジエスタ2 W924 stands in a 910 bay
@@ -254,7 +264,7 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
         o_use = o
         # 2000 以上は 2枚連動片引戸（W2430）：1644／1454 に丸めない（プラン6 1F ゲストルーム、user 11/17）
         if o["kind"] == "sliding_pocket" and not o.get("outset") and perp_at is not None and hinge_low is not None \
-                and o["width_mm"] < 2000:
+                and o["width_mm"] < 2000 and o.get("leaves", 1) < 2:
             # the frame at the end away from the pocket is over 780 wide: a wall running across that
             # end leaves no room for a W1644, so the narrower part is used (user 10/28: プラン5 2F, プラン3 1F)
             end = ga if hinge_low else gb
@@ -360,7 +370,7 @@ def plan(openings, lib, cfg, mapper, outside=None, larger_side=None, perp_at=Non
                 depth = -inner  # frame half depth (its local -y face)
                 shift = cfg["offsets_mm"]["board_face_inside"] + cfg["placement"]["storage_frame_proud_mm"] - depth
                 if not name.startswith("LIXIL"):
-                    # メーカーの収納建具の部品集は、開く側の枠の面を
+                    # パナソニックの収納建具は、build_panasonic_parts.build_storage が、開く側の枠の面を
                     # ボード面から12.5出した位置にもう置いている。さらにずらすと反対側の端が壁から
                     # 枠厚分飛び出す（user 11/13）
                     shift = 0.0

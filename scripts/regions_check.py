@@ -154,14 +154,43 @@ def ocr_region(img, bbox, variants, c):
     crop = img[y0:y1, x0:x1].copy()
     r, g, b = (crop[..., 2].astype(int), crop[..., 1].astype(int), crop[..., 0].astype(int))
     crop[(r - g > 25) & (r - b > 25) & (np.abs(g - b) <= 30)] = 255
+    rr = c.get("region_reread", {})
+    conf = rr.get("confusions", {}) if rr.get("use", False) else {}
+
+    def fix(t):
+        # 小さい文字で読み違えやすい字を直してから照らす（「勿入」「物ん」「物人」→物入。user 11/18）
+        return "".join(conf.get(ch, ch) for ch in t)
     best = None
-    for sc in (4, 6):
-        for ln in rrn.merge_fragments(rrn.ocr(crop, sc), c["merge_gap_px"]):
-            m = rrn.best_match(ln["text"], variants, c["match_min_score"])
+
+    def read(im, sc, ox, oy):
+        nonlocal best
+        for ln in rrn.merge_fragments(rrn.ocr(im, sc), c["merge_gap_px"]):
+            m = rrn.best_match(fix(ln["text"]), variants, c["match_min_score"])
             if m and m[1] != "除外語" and (best is None or m[2] > best[2]):
-                bx = (ln["box"][0] + ln["box"][2]) / 2 + x0
-                by = (ln["box"][1] + ln["box"][3]) / 2 + y0
+                bx = (ln["box"][0] + ln["box"][2]) / 2 + ox
+                by = (ln["box"][1] + ln["box"][3]) / 2 + oy
                 best = (m[0], m[1], m[2], ln["text"], bx, by)
+    for sc in (4, 6):
+        read(crop, sc, x0, y0)
+    if best is None and rr.get("use", False):
+        # 区画の枠の線（長い縦横の線）を消し、濃い字だけ黒にして、余白を付けて読み直す（プラン1 1F：茶色の棚の上の
+        # 「物入」は枠の線が字に付いて読めなかった。user 11/18）
+        g = cv2.cvtColor(img[y0 - 2:y1 + 2, x0 - 2:x1 + 2], cv2.COLOR_BGR2GRAY)
+        pad = rr.get("pad_px", 20)
+        for th in rr.get("dark_max", [80, 110]):
+            d = g < th
+            for y in range(d.shape[0]):
+                if d[y].mean() > rr.get("line_frac", 0.6):
+                    d[y] = False
+            for x in range(d.shape[1]):
+                if d[:, x].mean() > rr.get("line_frac", 0.6):
+                    d[:, x] = False
+            bw = cv2.cvtColor(np.where(d, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            bw = cv2.copyMakeBorder(bw, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            for sc in rr.get("scales", [4, 6, 8]):
+                read(bw, sc, x0 - 2 - pad, y0 - 2 - pad)
+            if best:
+                break
     return best
 
 
@@ -430,6 +459,43 @@ def main():
             adj[ra["id"]].add(rb["id"])
             adj[rb["id"]].add(ra["id"])
 
+    # 部屋の形から名前の見当を付ける（文字が読めない収納。user 11/18、プラン6 1F の階段下物入とクローゼット）
+    sg = rc.get("shape_guess", {})
+    if sg.get("use", False):
+        store = set(sg.get("storage_doors", ["folding", "storage"]))
+        # 階段と判定された辺（<階>_edges.json の stair）が区画の中にいくつあるか
+        stair_n = {}
+        e_path = walls_path.replace("_walls.json", "_edges.json")
+        if Path(e_path).exists() and det.get("fits"):
+            fx, fy = det["fits"]["x"], det["fits"]["y"]
+            for e in json.load(open(e_path, encoding="utf-8")):
+                if not e.get("stair"):
+                    continue
+                ex = fx[1] + fx[0] * ((e["step"] + 0.5) if e["h"] else e["line"])
+                ey = fy[1] + fy[0] * (e["line"] if e["h"] else (e["step"] + 0.5))
+                for r in regions:
+                    bx0, by0, bx1, by1 = r["bbox"]
+                    if bx0 - 2 <= ex <= bx1 + 2 and by0 - 2 <= ey <= by1 + 2:
+                        stair_n[r["id"]] = stair_n.get(r["id"], 0) + 1
+        for r in regions:
+            ds = r["doors"]
+            if not ds or not all(d in store for d in ds) or r["area_m2"] > sg.get("max_m2", 3.0):
+                continue
+            if sg.get("stair_edges", True) and stair_n.get(r["id"], 0) > 0 and r["names"] in ([], ["クローゼット"], ["階段"]):
+                # 中に階段の踏み板（読み取りで階段と判定された辺）がある収納は、階段下の収納（プラン5 1F）
+                r["names"] = ["階段下収納"]
+                r["guessed"] = "形から（収納の建具＋中に階段の踏み板）"
+            elif r["names"] == ["階段"]:
+                # 階段には建具が付かない：収納の建具の付いた小さな「階段」の区画は、階段下の収納
+                r["names"] = ["階段下収納"]
+                r["guessed"] = "形から（階段の文字＋収納の建具）"
+            elif not r["names"]:
+                r["names"] = ["クローゼット"]
+                r["guessed"] = "形から（名前なし・収納の建具だけの小さな区画）"
+            else:
+                continue
+            print(f"区画 {r['id']}：{r['guessed']} → {r['names'][0]}")
+
     # reachability from the entrance (or from outside through any door)
     # start at the entrance; an upper floor has none, so start at the stairs
     start = ([r["id"] for r in regions if "玄関" in r["names"]]
@@ -510,7 +576,7 @@ def main():
                                                     ((180, 180, 180), "その他の区画（色は区別用）")], box=True)
     cv2.imencode(".png", out)[1].tofile(prefix + "_区画の確認.png")
     json.dump([{"id": r["id"], "names": r["names"], "name_read": r.get("name_read"),
-                "doors": r["doors"], "area_m2": round(r["area_m2"], 2),
+                "doors": r["doors"], "area_m2": round(r["area_m2"], 2), **({"guessed": r["guessed"]} if r.get("guessed") else {}),
                 "bbox_px": [int(v) for v in r["bbox"]], "flags": r["flags"]} for r in regions],
               open(prefix + "_区画.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     boundary_judgement(img, clean, det, M, lab, by_label, region_at, ops, kamachi, foot, cfg, prefix, name)
