@@ -16,6 +16,9 @@
     （ポーチ側の壁＝付加断熱なし：面材の外面 → 通気層 → 外壁）
 この関数で作った仕様（"_入力" がある json）だけを上書きする。ほかの仕様ファイルには触らない。
 便器も汎用の形（"toilet_part": "generic"）。メーカー品を使うときは docs/メーカー品を使う手順.md を参照。
+水回り（キッチン・洗面台・浴室UB・便器）：wet={"kitchen": {"maker","product","size"}, ...} を渡すと、選んだ部品を
+kitchen_part・vanity_part・ub_part・toilet_part に入れる（size は "auto"＝図の間口にいちばん近いもの）。
+一覧は wet_catalog()（コマンド：--catalog）。部品集のブロック名から作る。
 """
 import csv
 import json
@@ -40,6 +43,7 @@ WIDTHS = {
     "両開き": (735, 825, 1190),
     "折戸": (735, 825, 1190, 1320, 1645, 1820),
     "片引戸": (1190, 1445, 1645),
+    "2枚連動片引戸": (2430,),  # 開口2000以上の引き戸（2枚が1つの戸袋に引き込む。user 11/19 で汎用にも足す）
     "引違い戸": (1645, 2430),
     "アウトセット片引戸": (1320, 1580),
     "引違い窓": (1185, 1235, 1540, 1640, 1690, 2550, 2600),
@@ -73,7 +77,210 @@ def _safe(name):
     return name
 
 
-def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, parts="generic", comment=""):
+# ---- 水回り（キッチン・洗面台・浴室UB・便器）の部品の一覧と、仕様への書き込み -------------------------
+# 一覧は、部品集（03_建具部品/*/部品集/*.jww）の中のブロック名から作る（手で書いた一覧にしない）。
+# ブロック名の決まり：<メーカー>_<種類>_<商品>[_W<幅>][_付記]（UB は <メーカー>_UB_<4桁の大きさ>_<ドアの位置>_…）
+WET_KINDS = {"キッチン": "kitchen", "洗面": "vanity", "UB": "ub"}
+_WET_LABEL = {"kitchen": "キッチン", "vanity": "洗面台", "ub": "浴室（UB）", "toilet": "便器"}
+
+
+def wet_entries():
+    """部品集から、水回りの部品を [{kind, maker, product, size, block, lib, (side)}] で返す。便器は便器の json から"""
+    out = []
+    for p in sorted((ROOT / "03_建具部品").glob("*/部品集/*.jww")):
+        try:
+            names = [b["name"] for b in ezjww.read_document(str(p))["block_defs"]]
+        except Exception:  # noqa: BLE001  読めない部品集は飛ばす
+            continue
+        lib = str(p.relative_to(ROOT))
+        for n in names:
+            t = n.split("_")
+            if len(t) < 3 or t[1] not in WET_KINDS:
+                continue
+            kind, maker, rest = WET_KINDS[t[1]], t[0], t[2:]
+            w = next((x[1:] for x in rest if re.fullmatch(r"W\d+", x)), None)
+            other = [x for x in rest if not re.fullmatch(r"W\d+", x)]
+            e = {"kind": kind, "maker": maker, "block": n, "lib": lib}
+            if kind == "ub":
+                if not other or not re.fullmatch(r"\d{4}", other[0]):
+                    continue
+                side = "beside" if any(x.startswith("ドア下") for x in other) else \
+                    "facing" if any(x.startswith("ドア右") for x in other) else None
+                if side is None:
+                    continue
+                e.update(product="ユニットバス", size=other[0], side=side)
+            else:
+                if w is None:
+                    continue
+                pen = kind == "kitchen" and "ペニンシュラ" in other
+                e.update(product="ペニンシュラ" if pen else " ".join(other), size=w, pen=pen)
+            out.append(e)
+    for p in sorted((ROOT / "03_建具部品").glob("*/便器_*/*.json")):
+        try:
+            part = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.append({"kind": "toilet", "maker": p.parent.parent.name, "product": str(part.get("名前") or p.stem),
+                    "size": None, "block": p.stem, "lib": p.relative_to(ROOT).as_posix()})
+    return out
+
+
+def wet_catalog():
+    """画面に出す一覧：{種類: {メーカー: {商品: [大きさ, …]}}}（持っていない部品は出ない）"""
+    cat = {k: {} for k in _WET_LABEL}
+    for e in wet_entries():
+        sizes = cat[e["kind"]].setdefault(e["maker"], {}).setdefault(e["product"], [])
+        if e["size"] and e["size"] not in sizes:
+            sizes.append(e["size"])
+    for k in cat.values():
+        for prods in k.values():
+            for s in prods.values():
+                s.sort(key=int)
+    return cat
+
+
+def wet_spec(wet):
+    """画面で選んだ水回り {種類: {maker, product, size}} を、仕様の json に入れる項目にする。
+    maker が空（指定しない）の種類は入れない（そのときは汎用の形）。size は "auto"（自動）か 幅・大きさの数字"""
+    if not wet:
+        return {}
+    ents = wet_entries()
+    add = {}
+    for kind, sel in wet.items():
+        if kind not in _WET_LABEL or not sel or not sel.get("maker"):
+            continue
+        size = str(sel.get("size") or "auto")
+        hit = [e for e in ents if e["kind"] == kind and e["maker"] == sel["maker"] and e["product"] == sel.get("product")]
+        if not hit:
+            raise ValueError(f"{_WET_LABEL[kind]}：選んだ部品が部品集にありません")
+        pick = hit if size == "auto" else [e for e in hit if e["size"] == size]
+        if not pick:
+            raise ValueError(f"{_WET_LABEL[kind]}：選んだ大きさの部品がありません（{size}）")
+        lib = pick[0]["lib"].replace("/", "\\")
+        if kind == "toilet":
+            add["toilet_part"] = pick[0]["lib"]
+        elif kind == "vanity":
+            add["vanity_part"] = {"library": lib, "blocks": {e["size"]: e["block"] for e in pick}, **({"fixed": True} if size != "auto" else {})}
+        elif kind == "kitchen":
+            kp = {"library": lib, "stove": [-1, 0], "back": [0, 1]}
+            if pick[0]["pen"]:
+                kp["peninsula"] = {"blocks": {e["size"]: e["block"] for e in pick}, "stove": [-1, 0], "back": [0, 1]}
+            else:
+                kp["block"] = pick[0]["block"]
+            add["kitchen_part"] = kp
+        else:  # ub：浴槽・ドアの向きは部品集の決まり（beside＝ドアが浴槽の横の壁、facing＝浴槽の向かいの壁）
+            by = {}
+            for e in pick:
+                by.setdefault(e["size"], {})[e["side"]] = e["block"]
+            sizes = sorted(by, key=int)
+            base = by[size] if size != "auto" else by[sizes[0]]
+            canon = {"beside": {"tub": [-1, 0], "door": [0, -1], "door_end": [1, 0]},
+                     "facing": {"tub": [-1, 0], "door": [1, 0], "door_end": [0, -1]}}
+            up = {"library": lib}
+            for side in ("beside", "facing"):
+                if side in base:
+                    up[side] = {"block": base[side], **canon[side]}
+            up["sizes"] = {s: {side: {"block": b} for side, b in by[s].items()} for s in sizes if size != "auto" or s != sizes[0]}
+            add["ub_part"] = up
+    return add
+
+
+# ---- 詳細設定：線の色・線種・レイヤ（種類ごと） -----------------------------------------------------
+# 仕様の json の "line_styles" に {種類: {"layer": 0〜15, "color": 1〜9, "style": 1〜9}} で入る。
+# 書いてない種類・項目は、いまの描き方のまま（既定）。作図側（make_plan.py）が cfg["line_styles"] を読んで使う。
+LINE_ITEMS = [
+    # (キー, 画面の名前, 既定の取り出し方)
+    ("wall", "壁線（柱面・面材・付加断熱・通気層ほか。窓の戻り線・額縁・腰壁・下がり壁も含む）"),
+    ("outermost", "最外周（外壁の外面）"),
+    ("innermost", "最内周（石膏ボードの面）"),
+    ("column", "柱"),
+    ("stud", "間柱"),
+    ("center", "通り芯"),
+    ("furniture", "住設と家具"),
+    ("hatch", "ハッチング"),
+    ("visible", "その他見え線（階段・框）"),
+    ("interior_fitting", "内装建具"),
+    ("exterior_fitting", "外部建具（窓）"),
+    ("entrance", "玄関ドア"),
+]
+LINE_LIMITS = {"layer": (0, 15), "color": (1, 9), "style": (1, 9)}
+# 初期設定（user 11/20）：レイヤグループは全部 □0 に統一し、レイヤ（○）は種類ごとにすべて分ける。
+# ○の番号：0〜F。A＝文字、F＝図面枠は、プログラムが使うので避けた
+DEFAULT_LAYERS = {
+    "wall": 3, "outermost": 7, "innermost": 8, "column": 9, "stud": 12, "center": 4,
+    "furniture": 6, "hatch": 11, "visible": 13, "interior_fitting": 5, "exterior_fitting": 14, "entrance": 2,
+}
+
+
+def line_defaults(cfg):
+    """種類ごとの、既定の {layer, color, style}（レイヤは DEFAULT_LAYERS＝種類ごとにすべて別。建具の色・線種は部品のままなので None）"""
+    L = cfg["layers"]
+    w, c = L["wall"], L["center"]
+    fd = cfg.get("furniture_draw", {})
+    pc = cfg.get("placement", {})
+    fit = L.get("fitting", {}).get("layer", w["layer"])
+    out = {
+        "wall": {"layer": w["layer"], "color": w["structure_color"], "style": w["style"]},
+        "outermost": {"layer": w["layer"], "color": w["finish_color"], "style": w["style"]},
+        "innermost": {"layer": w["layer"], "color": w["finish_color"], "style": w["style"]},
+        "column": {"layer": w["layer"], "color": w["structure_color"], "style": w["style"]},
+        "stud": {"layer": w["layer"], "color": w["structure_color"], "style": w["style"]},
+        "center": {"layer": c["layer"], "color": c["color"], "style": c["style"]},
+        "furniture": {"layer": fd.get("layer"), "color": fd.get("color"), "style": fd.get("style")},
+        "hatch": {"layer": fd.get("built_in_layer", fd.get("layer")), "color": fd.get("color"), "style": fd.get("style")},
+        "visible": {"layer": pc.get("kamachi_layer"), "color": pc.get("kamachi_color"), "style": pc.get("kamachi_style")},
+        "interior_fitting": {"layer": fit, "color": None, "style": None},
+        "exterior_fitting": {"layer": fit, "color": None, "style": None},
+        "entrance": {"layer": fit, "color": None, "style": None},
+    }
+    for k, n in DEFAULT_LAYERS.items():   # レイヤは、初期設定で種類ごとにすべて分ける
+        out[k]["layer"] = n
+    return out
+
+
+def line_env():
+    """画面の詳細設定に出す一覧：色（JWの色1〜9の実際の色）・線種（1〜9）・レイヤ名（0〜F）・種類ごとの既定"""
+    env = json.loads((SETTINGS / "参考_環境.json").read_text(encoding="utf-8"))
+    cfg = json.loads((SETTINGS / "default.json").read_text(encoding="utf-8"))
+    pens = env["palette"]["pen_colors"]
+    colors = []
+    for n in range(1, 10):
+        v = pens[n]  # 0x00BBGGRR
+        colors.append({"n": n, "hex": "#%02x%02x%02x" % (v & 255, (v >> 8) & 255, (v >> 16) & 255)})
+    lt = {d["number"]: d for d in env["line_types"]["standard"]}
+    styles = [{"n": 1, "segments": []}]
+    for n in range(2, 10):
+        if n in lt:
+            styles.append({"n": n, "segments": lt[n]["segments_mm"]})
+    names = [l.get("name", "") for l in env["layer_groups"][0]["layers"]]
+    layers = [{"n": i, "name": names[i] if i < len(names) else ""} for i in range(16)]
+    cfg_names = cfg["layers"].get("names", [])
+    layers = [{"n": i, "name": cfg_names[i] if i < len(cfg_names) and cfg_names[i] else l["name"]} for i, l in enumerate(layers)]
+    return {"items": [{"key": k, "label": n} for k, n in LINE_ITEMS], "defaults": line_defaults(cfg),
+            "colors": colors, "styles": styles, "layers": layers}
+
+
+def lines_spec(lines):
+    """画面で選んだ {種類: {layer, color, style}} を、仕様に入れる形にする（空欄＝既定の項目は入れない）"""
+    keys = {k for k, _ in LINE_ITEMS}
+    out = {k: {"layer": DEFAULT_LAYERS[k]} for k in keys}   # 初期設定：レイヤは種類ごとにすべて別（画面で変えた分で上書き）
+    for key, v in (lines or {}).items():
+        if key not in keys:
+            raise ValueError(f"詳細設定：知らない種類です（{key}）")
+        one = {}
+        for f, (lo, hi) in LINE_LIMITS.items():
+            x = (v or {}).get(f)
+            if x in (None, ""):
+                continue
+            x = int(x)
+            if not lo <= x <= hi:
+                raise ValueError(f"詳細設定：{key} の {f} は {lo}〜{hi} です（入力 {x}）")
+            one[f] = x
+        out[key].update(one)
+    return out
+
+
+def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, parts="generic", comment="", wet=None, lines=None):
     """05_設定/仕様/<name>.json を書いて、そのパスを返す。parts="generic" なら汎用の部品集も作る。"""
     name = _safe(name)
     vals = {"ext": ext, "air": air, "ins": ins, "osb": osb, "col": col, "pb": pb}
@@ -110,6 +317,13 @@ def make_spec(name, ext=16.0, air=18.0, ins=60.0, osb=9.5, col=105.0, pb=12.5, p
         "draw_board": draw_board,
         "offsets_mm": off,
     }
+    data.update(wet_spec(wet))  # 選んだ水回りの部品（選ばなければ汎用の形のまま）
+    if wet:
+        data["_入力"] = dict(vals, 水回り=wet)
+    ls = lines_spec(lines)  # 詳細設定（線の色・線種・レイヤ）
+    if ls:
+        data["line_styles"] = ls
+        data["_入力"] = dict(data["_入力"], 線=ls)
     path = spec_dir / f"{name}.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -197,6 +411,14 @@ def _shape(word, W, off, added, board=65.0):
         rect(x0, -h, x0 + 30, h); rect(m - 15, -h, m + 15, h); rect(x1 - 30, -h, x1, h)
         line((x0 + 30, 20), (m + 40, 20)); line((x0 + 30, 50), (m + 40, 50))
         line((m + 15, -20), (x1 - 30, -20))  # 戸袋の中の線
+    elif word == "2枚連動片引戸":
+        # 2枚が1つの戸袋に重なって引き込む：開口は全体の 2/3、戸袋は 1/3（中方立から右）
+        m = x0 + W * 2 / 3
+        rect(x0, -h, x0 + 30, h); rect(m - 15, -h, m + 15, h); rect(x1 - 30, -h, x1, h)
+        half_ = (m - 15 - (x0 + 30)) / 2
+        line((x0 + 30, 20), (x0 + 30 + half_ + 40, 20)); line((x0 + 30, 50), (x0 + 30 + half_ + 40, 50))  # 1枚目
+        line((x0 + 30 + half_, -10), (m + 40, -10)); line((x0 + 30 + half_, -40), (m + 40, -40))  # 2枚目
+        line((m + 15, -60), (x1 - 30, -60))  # 戸袋の中の線
     elif word == "アウトセット片引戸":
         # 壁を削らず、壁の表面（-y の面）に付ける引戸。開口は枠の外から外
         j0, j1 = 65.0, 65.0 + W / 2 - 10  # 枠の外＝石膏ボード面（W1580 なら 65〜845＝910の柱間）
@@ -257,6 +479,22 @@ def build_generic(out_dir, off, col_mm=105.0):
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:]
+    if args == ["--catalog"]:  # 画面の水回りの一覧（JSON）
+        print(json.dumps(wet_catalog(), ensure_ascii=False))
+        sys.exit(0)
+    if args == ["--lineenv"]:  # 画面の詳細設定の一覧（JSON）
+        print(json.dumps(line_env(), ensure_ascii=False))
+        sys.exit(0)
+    lines = None
+    if "--lines" in args:
+        i = args.index("--lines")
+        lines = json.loads(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    wet = None
+    if "--wet" in args:
+        i = args.index("--wet")
+        wet = json.loads(args[i + 1])
+        args = args[:i] + args[i + 2:]
     parts = "generic"
     if "--parts" in args:
         i = args.index("--parts")
@@ -266,5 +504,5 @@ if __name__ == "__main__":
     nm, nums = args[0], [float(v) for v in args[1:]]
     keys = ["ext", "air", "ins", "osb", "col", "pb"]
     kw = dict(DEFAULTS, **dict(zip(keys, nums)))
-    p = make_spec(nm, parts=parts, **kw)
+    p = make_spec(nm, parts=parts, wet=wet, lines=lines, **kw)
     print(p)

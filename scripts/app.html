@@ -210,7 +210,7 @@ body.few .th:not(.on) { display:none; }
 #custom .calc { margin:12px 0 0; font-size:13px; letter-spacing:.1em; color:var(--sub); }
 #custom .calc b { color:#fff; font:400 20px "Segoe UI",sans-serif; margin:0 4px; }
 /* 断面図の後ろだけすりガラス：枠は付けず、外へ行くほど薄く消える（背景の図面の線と混ざらないように） */
-.sectWrap { position:relative; flex:1; min-width:280px; max-width:560px; }
+.sectWrap { position:relative; flex:1; min-width:280px; max-width:700px; }
 /* すりガラスは背景と同じ動かない層（.bgwrap）に置き、断面図の位置に JS で合わせる。
    動いている要素の中に置くと、動きの途中はブラウザがぼかしを止めてしまうため */
 #glass { position:absolute; pointer-events:none; opacity:0; transition:opacity .5s ease;
@@ -238,6 +238,27 @@ body.few .th:not(.on) { display:none; }
 #custom .parts input { accent-color:#fff; margin-right:8px; }
 #custom .parts em { font-style:normal; margin-left:10px; color:#fff; border-bottom:1px solid rgba(255,255,255,.4); }
 #custom .note { margin-top:14px; font-size:11px; letter-spacing:.12em; color:var(--sub); }
+
+#custom .wet { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px 24px; margin-top:22px; position:relative; z-index:2; }
+#custom .wet:empty { display:none; }
+#custom .wet .wc > span { display:block; font-size:12px; letter-spacing:.3em; color:#c9ced6; margin-bottom:4px; }
+#custom .wet select { width:100%; margin-bottom:4px; font-size:13px; }
+#custom .wet select:disabled { opacity:.35; }
+
+/* 詳細設定：線の色・線種・レイヤ */
+#custom .adv { margin-top:30px; position:relative; z-index:2; padding-bottom:150px; }
+#custom .adv summary { cursor:pointer; list-style:none; font-size:12px; letter-spacing:.3em; color:#c9ced6; padding:6px 0; border-bottom:1px solid rgba(255,255,255,.25); }
+#custom .adv summary::-webkit-details-marker { display:none; }
+#custom .adv summary::before { content:"＋ "; } #custom .adv[open] summary::before { content:"－ "; }
+#custom .adv summary small { margin-left:16px; letter-spacing:.12em; color:var(--sub); font-size:11px; }
+#custom .adv .ah, #custom .adv .ar { display:grid; grid-template-columns:minmax(0,1.9fr) minmax(0,.9fr) minmax(0,1.25fr) minmax(0,1.5fr) minmax(0,1.5fr); gap:14px; align-items:center; padding:5px 0; border-bottom:1px solid rgba(255,255,255,.1); }
+#custom .adv .ah { font-size:11px; letter-spacing:.2em; color:var(--sub); }
+#custom .adv .ar > span:first-child { font-size:13.5px; letter-spacing:.06em; }
+#custom .adv .ar select { width:100%; font-size:13px; }
+#custom .adv .ar .def { font-size:11px; color:var(--sub); letter-spacing:.06em; }
+#custom .adv .ar select.chg { border-bottom-color:#fff; }
+#custom .adv .advnote { margin:12px 0 0; font-size:11px; letter-spacing:.08em; color:var(--sub); line-height:1.7; }
+#custom .adv .rst { margin:12px 0 0; background:none; border:0; border-bottom:1px solid rgba(255,255,255,.45); color:#c9ced6; font:inherit; font-size:12px; letter-spacing:.14em; cursor:pointer; padding:2px 0; }
 
 /* 画面が低い時（ノート PC など）は、右下のボタンと重ならないよう、仕様の欄を詰める */
 @media (max-height:820px) {
@@ -463,7 +484,7 @@ body.running .bgwrap .shade { background:linear-gradient(90deg,rgba(11,13,17,.9)
           <div class="nrow"><input type="text" id="cName" placeholder="仕様の名前" autocomplete="off"><button type="button" class="gbtn" id="saveSpec">保存する</button></div>
           <p class="nmsg" id="saveMsg"></p></div>
       </div>
-      <!-- 配布用：自分で数字を入れる（壁の厚み・建具の部品）。いまは見た目だけで、作図にはまだ使えない -->
+      <!-- 配布用：自分で数字を入れる（壁の厚み・建具の部品・水回りの部品）。選んだ内容は作図に使われる（壁の厚み：save_custom → custom_spec.py が仕様の json に書く。水回りは同じやり方で *_part に入る） -->
       <div id="custom" class="hide">
         <div class="cols">
           <div class="nums">
@@ -482,9 +503,16 @@ body.running .bgwrap .shade { background:linear-gradient(90deg,rgba(11,13,17,.9)
                 <label><input type="radio" name="parts" id="pOwn"> 自分の部品集（.jww）を選ぶ<em id="pName"></em></label>
                 <input type="file" id="pFile" accept=".jww" class="hide"></div>
             </div>
+            <!-- 水回り：メーカー → 商品 → 大きさ。一覧は部品集のブロック名から作る（/api/wet）。持っていない部品は出ない -->
+            <div class="wet" id="wet"></div>
           </div>
           <div class="sectWrap"><svg id="sect" viewBox="0 0 360 262"></svg></div>
         </div>
+        <!-- 詳細設定：線の種類ごとに、色・線種・レイヤを指定（空欄＝既定）。一覧は /api/lines（custom_spec.py --lineenv） -->
+        <details class="adv" id="adv" hidden>
+          <summary>詳細設定<small>線の色・線種・レイヤ</small></summary>
+          <div id="advBody"></div>
+        </details>
       </div>
     </div>
   </div>
@@ -553,7 +581,24 @@ document.addEventListener("animationend", e => {
 
 async function api(path, opt) { const r = await fetch(path, opt); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
 
+/* 画面が開いている合図（窓なしで起動した時、画面を閉じたらプログラムが終わるため）。10秒ごと */
+setInterval(() => { fetch("/api/ping").catch(() => {}); }, 10000);
+fetch("/api/ping").catch(() => {});
+/* 画像用の表示（#shot-adv）：詳細設定の欄を開いて、いくつか選んだ状態にする（ホームページ用の画面写真を撮るため） */
+window.addEventListener("load", async () => {
+  if (location.hash !== "#shot-adv") return;
+  await new Promise(r => setTimeout(r, 2500));
+  ["drop", "drop2"].forEach(i => { const e = document.getElementById(i); if (e) e.classList.add("hide"); });
+  $("#specPane").classList.remove("hide"); showCustom(true, true);
+  const a = $("#adv"); a.open = true;
+  const set = (k, f, v) => { const s = document.querySelector(`#advBody .ar[data-k=${k}] [data-f=${f}]`); if (s) { s.value = v; s.dispatchEvent(new Event("change")); } };
+  set("outermost", "color", 2); set("innermost", "color", 2); set("center", "style", 5); set("center", "layer", 4); set("stud", "color", 3); set("hatch", "layer", 11); set("entrance", "color", 6);
+  a.scrollIntoView({block: "start"});
+  $("#glass").style.transition = "none";   // すりガラスを、すぐ出す（撮影のため）
+});
 async function init() {
+  initWet();
+  initAdv();
   const s = await api("/api/state");
   specs = s.specs;
   // SNS 用の画像・動画（?demo）：会社の仕様は出さず、外壁などの厚みを自分で入れる仕様だけにする
@@ -685,7 +730,7 @@ function showCustom(on, quiet) {
 const val = k => Math.max(0, parseFloat($(`#custom [data-k=${k}]`).value) || 0);
 function drawSect(changed) {
   const L = [["ext", "外壁"], ["air", "通気"], ["ins", "付加断熱"], ["osb", "面材"], ["col", "柱"], ["pb", "ボード"]].map(([k, n]) => ({k, n, t: val(k)}));
-  const tot = L.reduce((s, l) => s + l.t, 0) || 1, X0 = 40, W = 270, k = W / tot, y0 = 40, y1 = 200;
+  const tot = L.reduce((s, l) => s + l.t, 0) || 1, X0 = 40, k = 1.22, W = tot * k, y0 = 40, y1 = 200;   // 縮尺は一定（1mm＝1.22）。厚みを変えると、全体の幅が変わる（柱などの比率は常に正しい）
   let x = X0, g = "", lab = "";
   L.forEach((l, i) => {
     const w = l.t * k, a = x, b = x + w, cls = changed === l.k ? ' class="bump"' : "";
@@ -713,6 +758,8 @@ function drawSect(changed) {
     <line x1="${X0}" y1="${yd}" x2="${cx}" y2="${yd}" stroke-width=".7"/>
     <circle cx="${X0}" cy="${yd}" r="1.8" fill="#fff" stroke="none"/><circle cx="${cx}" cy="${yd}" r="1.8" fill="#fff" stroke="none"/>
     <text x="${(X0 + cx) / 2}" y="${yd - 5}" text-anchor="middle" stroke="none" style="font-size:12px;fill:#fff">${+d.toFixed(1)}</text></g>`;
+  const VW = Math.round(X0 + W + 50);   // 全体の幅に合わせて図の幅を変える（収まらない時だけ、全体を同じ比率で縮める）
+  $("#sect").setAttribute("viewBox", `0 0 ${VW} 262`); $("#sect").style.width = Math.round(VW * 1.3) + "px"; $("#sect").style.maxWidth = "100%";
   $("#sect").innerHTML = `<text x="6" y="${(y0 + y1) / 2}" style="writing-mode:vertical-rl">屋外</text><text x="${X0 + W + 14}" y="${(y0 + y1) / 2 + 4}">室内</text>` + g + lab + dim;
   $("#toFace").textContent = +d.toFixed(1);
 }
@@ -854,10 +901,88 @@ $("#pFile").onchange = async e => {
   } catch (er) { alert(er.message); $("#pGen").checked = true; }
 };
 
-/* 自分で入れた数字（壁の厚み・建具の部品） */
+
+/* 水回り：種類ごとに メーカー → 商品 → 大きさ。「指定しない」なら汎用の形。大きさの「自動」は、図の間口にいちばん近いもの */
+const WET = [["kitchen", "キッチン"], ["vanity", "洗面台"], ["ub", "浴室（UB）"], ["toilet", "便器"]];
+const NONE = "指定しない（汎用）";
+let wetCat = {};
+async function initWet() {
+  // SNS 用（?demo）は、部品集のメーカー名が見えないように水回りの欄を出さない
+  try { wetCat = new URLSearchParams(location.search).has("demo") ? {} : await api("/api/wet"); } catch (e) { wetCat = {}; }
+  const box = $("#wet");
+  box.innerHTML = WET.filter(([k]) => Object.keys(wetCat[k] || {}).length).map(([k, n]) =>
+    `<div class="wc" data-k="${k}"><span>${n}</span><select class="wm"></select><select class="wp"></select><select class="ws"></select></div>`).join("");
+  box.querySelectorAll(".wc").forEach(el => {
+    const k = el.dataset.k, M = el.querySelector(".wm"), P = el.querySelector(".wp"), Z = el.querySelector(".ws");
+    const opts = (sel, list) => { sel.innerHTML = list.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join(""); };
+    const fillP = () => {
+      const prods = Object.keys((wetCat[k] || {})[M.value] || {});
+      opts(P, prods.map(x => [x, x])); P.disabled = !M.value; fillZ();
+    };
+    const fillZ = () => {
+      const sizes = (((wetCat[k] || {})[M.value] || {})[P.value]) || [];
+      opts(Z, sizes.length ? [["auto", "自動（間口に近いもの）"], ...sizes.map(x => [x, x])] : [["auto", "—"]]);
+      Z.disabled = !M.value || !sizes.length;
+    };
+    opts(M, [["", NONE], ...Object.keys(wetCat[k]).map(x => [x, x])]);
+    M.onchange = fillP; P.onchange = fillZ; fillP();
+  });
+}
+function wetBody() {
+  const w = {};
+  document.querySelectorAll("#wet .wc").forEach(el => {
+    const m = el.querySelector(".wm").value;
+    if (m) w[el.dataset.k] = {maker: m, product: el.querySelector(".wp").value, size: el.querySelector(".ws").value || "auto"};
+  });
+  return w;
+}
+
+/* 詳細設定：種類ごとに 色・線種・レイヤ。「既定」のままなら仕様に書かない（いまの描き方のまま） */
+let advEnv = null;
+async function initAdv() {
+  const box = $("#advBody");
+  try { advEnv = new URLSearchParams(location.search).has("demo") ? null : await api("/api/lines"); } catch (e) { advEnv = null; }
+  if (!advEnv || !advEnv.items) return;
+  const dash = segs => segs.length ? segs.map((s, i) => (i % 2 ? " ".repeat(Math.max(1, Math.round(s / .7))) : "─".repeat(Math.max(1, Math.round(s / .7))))).join("").slice(0, 16) : "────────────";
+  const colOpts = advEnv.colors.map(c => `<option value="${c.n}" style="color:${c.hex}">■ 色${c.n}</option>`).join("");
+  const styOpts = advEnv.styles.map(s => `<option value="${s.n}">${s.n}　${dash(s.segments)}</option>`).join("");
+  const CIRC = "⓪①②③④⑤⑥⑦⑧⑨ⒶⒷⒸⒹⒺⒻ";   // JW_CAD の表示：○＝レイヤ、□＝レイヤグループ
+  const layOpts = advEnv.layers.map(l => `<option value="${l.n}">${CIRC[l.n]}　${esc(l.name || "")}</option>`).join("");
+  const dflt = d => {
+    const sn = n => { const s = advEnv.styles.find(x => x.n === n); return n === 1 ? "実線" : "線種" + n; };
+    return [d.color ? "色" + d.color : "", d.style ? sn(d.style) : "", d.layer != null ? CIRC[d.layer] : ""].filter(Boolean).join("・") || "部品のまま";
+  };
+  box.innerHTML = `<div class="ah"><span>種類</span><span>色</span><span>線種</span><span>レイヤ（○）</span><span>既定</span></div>` +
+    advEnv.items.map(it => {
+      const d = advEnv.defaults[it.key] || {};
+      const part = !d.color && !d.style ? "（色・線種は部品のまま）" : "";
+      return `<div class="ar" data-k="${it.key}"><span>${esc(it.label)}</span>
+        <select data-f="color"><option value="">既定</option>${colOpts}</select>
+        <select data-f="style"><option value="">既定</option>${styOpts}</select>
+        <select data-f="layer"><option value="">既定</option>${layOpts}</select>
+        <span class="def">${dflt(d)}</span></div>`;
+    }).join("") + `<p class="advnote">壁線の色を変えると、窓の戻り線も同じ色になります。そのため、機械検査で戻り線と壁の線の見分けがつきにくくなります。</p><p class="advnote">レイヤは ○（⓪〜Ⓕ）、レイヤグループは □ で表します。初期設定は、レイヤグループを □0 に統一し、レイヤは種類ごとにすべて分けています（「既定」の表示のとおり）。</p><button type="button" class="rst" id="advReset">すべて既定に戻す</button>`;
+  const tint = s => { const o = s.selectedOptions[0]; s.style.color = s.dataset.f === "color" && o && o.style.color ? o.style.color : ""; s.classList.toggle("chg", !!s.value); };
+  box.querySelectorAll("select").forEach(s => s.addEventListener("change", () => tint(s)));
+  $("#advReset").onclick = () => box.querySelectorAll("select").forEach(s => { s.value = ""; tint(s); });
+  $("#adv").hidden = false;
+}
+function advBody() {
+  const out = {};
+  document.querySelectorAll("#advBody .ar").forEach(r => {
+    const o = {};
+    r.querySelectorAll("select").forEach(s => { if (s.value !== "") o[s.dataset.f] = +s.value; });
+    if (Object.keys(o).length) out[r.dataset.k] = o;
+  });
+  return out;
+}
+
+/* 自分で入れた数字（壁の厚み・建具の部品・水回り） */
 function customBody() {
   const c = {name: $("#cName").value.trim(), parts: $("#pOwn").checked ? ownParts : "generic"};
   ["ext", "air", "ins", "osb", "col", "pb"].forEach(k => c[k] = val(k));
+  c.wet = wetBody();
+  c.lines = advBody();
   return c;
 }
 /* 保存する：作図とは関係なく、名前を付けて仕様に保存（次から一覧に出る） */

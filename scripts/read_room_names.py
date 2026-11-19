@@ -136,6 +136,47 @@ def best_match(text, variants, min_score):
     return best if best and best[2] >= min_score else None
 
 
+def complete_from_pieces(found, variants, c):
+    """読めた切れ端から部屋名を決める（user 11/18、プラン6 1F：「ゲ」と「ム」しか読めなかったゲストルーム）。
+    名前の付かなかった切れ端のうち、同じ行で近いものをまとめ、その文字を名前の中に同じ順で全部含む
+    部屋名が1つだけなら、その名前にする（文字は2つ以上。数字・記号は使わない）。"""
+    pc = c.get("pieces", {})
+    if not pc.get("use", False):
+        return
+    keep = lambda ch: not ch.isdigit() and ch not in "()（）,.、・ー一-′'凵口0"  # noqa: E731
+    loose = [f for f in found if not f.get("name") and any(keep(ch) for ch in norm(f["raw"]))]
+    loose.sort(key=lambda f: (round(f["y"] / pc.get("row_px", 12)), f["x"]))
+    used = set()
+    for i, f in enumerate(loose):
+        if id(f) in used:
+            continue
+        group = [f]
+        for g in loose[i + 1:]:
+            if abs(g["y"] - f["y"]) <= pc.get("row_px", 12) and 0 < g["x"] - group[-1]["x"] <= pc.get("gap_px", 150):
+                group.append(g)
+        chars = "".join(ch for g in group for ch in norm(g["raw"]) if keep(ch))
+        if len(chars) < 2:
+            continue
+
+        def has_in_order(v):
+            it = iter(v)
+            return all(ch in it for ch in chars)
+        hits = {name: (name, kind, v) for v, name, kind in variants if len(v) >= 3 and has_in_order(v)}
+        if len(hits) != 1:
+            continue
+        name, kind, v = next(iter(hits.values()))
+        x0 = min(g["box"][0] for g in group); y0 = min(g["box"][1] for g in group)
+        x1 = max(g["box"][2] for g in group); y1 = max(g["box"][3] for g in group)
+        item = {"raw": " / ".join(g["raw"] for g in group), "x": round((x0 + x1) / 2, 1), "y": round((y0 + y1) / 2, 1),
+                "box": [x0, y0, x1, y1], "name": name, "kind": kind, "score": round(len(chars) / len(v), 2),
+                "matched": v, "from_pieces": True}
+        for g in group:
+            used.add(id(g))
+            found.remove(g)
+        found.append(item)
+        print(f"   切れ端から部屋名: {item['raw']!r} -> {name}（{v}）")
+
+
 def main():
     img_path, cfg_path, names_path, prefix = sys.argv[1:5]
     cfg = json.load(open(cfg_path, encoding="utf-8"))
@@ -173,6 +214,7 @@ def main():
                 found[found.index(dup)] = item
             continue
         found.append(item)
+    complete_from_pieces(found, variants, c)
     json.dump(found, open(prefix + "_部屋名.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     rooms = [f for f in found if f.get("name") and f["kind"] != "除外語"]
     name = prefix.replace("\\", "/").split("/")[-1]

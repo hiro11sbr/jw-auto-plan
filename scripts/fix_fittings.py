@@ -37,6 +37,8 @@ def fix(jww, meta_path, cfg=None, lib=None, out=None):
     geom = {}
     cc.check(jww, meta_path, cfg, lib, quiet=True, geom=geom)
     rects, wl, fl, S, (cx, cy) = geom["rects"], geom["wl"], geom["fl"], geom["S"], geom["center"]
+    # 線の種類ごとの色・レイヤーの指定（line_styles）を反映した実効値：建具のレイヤー、紫線の色
+    fls, purple_c = geom.get("fls", {fl}), geom.get("purple", {5})
     mm = lambda x, y: (x * S + cx, y * S + cy)  # noqa: E731
     paper = lambda p: ((p[0] - cx) / S, (p[1] - cy) / S)  # noqa: E731
     doc = ezjww.read_document(str(jww))
@@ -49,7 +51,7 @@ def fix(jww, meta_path, cfg=None, lib=None, out=None):
             b = e["base"]
             # M 窓の戻りの紫線が枠に届いていない → 部品の線までのばす（user 11/14）
             for sp, sq, tip, tgt in shorts:
-                if b["pen_color"] == 5 and ((close(p, sp) and close(q, sq)) or (close(p, sq) and close(q, sp))):
+                if b["pen_color"] in purple_c and ((close(p, sp) and close(q, sq)) or (close(p, sq) and close(q, sp))):
                     p, q = (tgt, q) if close(p, tip) else (p, tgt)
                     e = dict(e, start_x=paper(p)[0], start_y=paper(p)[1], end_x=paper(q)[0], end_y=paper(q)[1])
                     n_ext += 1
@@ -58,10 +60,10 @@ def fix(jww, meta_path, cfg=None, lib=None, out=None):
                 seg = LineString([p, q])
                 for pl, _word, _W, purple, wallbox, _whole, _c in rects:
                     cut = None
-                    if b["layer"] != fl and b["pen_color"] == 5 and not purple.is_empty \
+                    if b["layer"] not in fls and b["pen_color"] in purple_c and not purple.is_empty \
                             and seg.intersects(purple) and seg.intersection(purple).length > 1.0:
                         cut = purple.buffer(1.5, join_style=2)
-                    elif b["layer"] == wl and b["pen_color"] != 5 and seg.intersects(wallbox) \
+                    elif b["layer"] == wl and b["pen_color"] not in purple_c and seg.intersects(wallbox) \
                             and seg.intersection(wallbox).length > 3.0 \
                             and (abs(q[0] - p[0]) > abs(q[1] - p[1])) == pl["horizontal"]:
                         cut = wallbox
@@ -81,9 +83,12 @@ def fix(jww, meta_path, cfg=None, lib=None, out=None):
                 (x0, y0), (x1, y1) = seg.coords[0], seg.coords[-1]
                 e = dict(e, start_x=paper((x0, y0))[0], start_y=paper((x0, y0))[1], end_x=paper((x1, y1))[0], end_y=paper((x1, y1))[1])
         ents.append(e)
-    for p, q, bb in geom.get("missing", []):
+    import line_styles as ls_
+    for p, q, bb, word in geom.get("missing", []):
         a, b2 = paper(p), paper(q)
-        ents.append({"type": "LINE", "base": dict(bb, layer=fl), "start_x": a[0], "start_y": a[1], "end_x": b2[0], "end_y": b2[1]})
+        ov = ls_.override(cfg, ls_.fitting_kind(word))  # 建具の色・線種・レイヤーの指定（なければ部品のまま）
+        base = dict(bb, layer=ov.get("layer", fl), pen_color=ov.get("color", bb["pen_color"]), pen_style=ov.get("style", bb["pen_style"]))
+        ents.append({"type": "LINE", "base": base, "start_x": a[0], "start_y": a[1], "end_x": b2[0], "end_y": b2[1]})
     n_add = len(geom.get("missing", []))
     write(doc, ents, out or jww)
     print(f"建具まわりの線：切った {n_cut}、足した {n_add}、窓までのばした {n_ext} → {out or jww}")

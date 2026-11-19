@@ -22,7 +22,7 @@ from opening_detect import Mapper  # noqa: E402
 from toilet_detect import find_pan  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
-LEN_MM = 736  # 便器の長さ（標準）
+LEN_MM = 736  # 便器の長さ（GG）
 
 
 def main():
