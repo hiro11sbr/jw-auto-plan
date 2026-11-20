@@ -204,11 +204,12 @@ LINE_ITEMS = [
     ("entrance", "玄関ドア"),
 ]
 LINE_LIMITS = {"layer": (0, 15), "color": (1, 9), "style": (1, 9)}
-# 初期設定（user 11/20）：レイヤグループは全部 □0 に統一し、レイヤ（○）は種類ごとにすべて分ける。
+# 初期設定（user 11/20）：レイヤグループは全部 □0 に統一し、レイヤ（○）は種類ごとに分ける（最外周＝最内周、建具3種は同じ）。
 # ○の番号：0〜F。A＝文字、F＝図面枠は、プログラムが使うので避けた
 DEFAULT_LAYERS = {
-    "wall": 3, "outermost": 7, "innermost": 8, "column": 9, "stud": 12, "center": 4,
-    "furniture": 6, "hatch": 11, "visible": 13, "interior_fitting": 5, "exterior_fitting": 14, "entrance": 2,
+    "wall": 3, "outermost": 7, "innermost": 7, "column": 9, "stud": 12, "center": 4,   # 最外周と最内周は同じレイヤ（user 11/20）
+    "furniture": 6, "hatch": 11, "visible": 13,
+    "interior_fitting": 5, "exterior_fitting": 5, "entrance": 5,                       # 建具3種は同じレイヤ（user 11/20）
 }
 
 

@@ -961,7 +961,7 @@ async function initAdv() {
         <select data-f="style"><option value="">既定</option>${styOpts}</select>
         <select data-f="layer"><option value="">既定</option>${layOpts}</select>
         <span class="def">${dflt(d)}</span></div>`;
-    }).join("") + `<p class="advnote">壁線の色を変えると、窓の戻り線も同じ色になります。そのため、機械検査で戻り線と壁の線の見分けがつきにくくなります。</p><p class="advnote">レイヤは ○（⓪〜Ⓕ）、レイヤグループは □ で表します。初期設定は、レイヤグループを □0 に統一し、レイヤは種類ごとにすべて分けています（「既定」の表示のとおり）。</p><button type="button" class="rst" id="advReset">すべて既定に戻す</button>`;
+    }).join("") + `<p class="advnote">壁線の色を変えると、窓の戻り線も同じ色になります。そのため、機械検査で戻り線と壁の線の見分けがつきにくくなります。</p><p class="advnote">レイヤは ○（⓪〜Ⓕ）、レイヤグループは □ で表します。初期設定は、レイヤグループを □0 に統一し、レイヤは種類ごとに分けています（最外周と最内周、建具3種は同じレイヤ。「既定」の表示のとおり）。</p><button type="button" class="rst" id="advReset">すべて既定に戻す</button>`;
   const tint = s => { const o = s.selectedOptions[0]; s.style.color = s.dataset.f === "color" && o && o.style.color ? o.style.color : ""; s.classList.toggle("chg", !!s.value); };
   box.querySelectorAll("select").forEach(s => s.addEventListener("change", () => tint(s)));
   $("#advReset").onclick = () => box.querySelectorAll("select").forEach(s => { s.value = ""; tint(s); });
